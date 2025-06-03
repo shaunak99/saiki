@@ -324,7 +324,9 @@ program
                 const apiUrl = process.env.API_URL ?? `http://localhost:${apiPort}`;
 
                 logger.info('Starting server (REST APIs + WebSockets)...', null, 'cyanBright');
-                await startApiAndLegacyWebUIServer(agent, apiPort, false, agentCard);
+                // Enable legacy UI for cloud deployment (serves static files)
+                const serveLegacyUI = process.env.NODE_ENV === 'production';
+                await startApiAndLegacyWebUIServer(agent, apiPort, serveLegacyUI, agentCard);
                 logger.info(`Server running at ${apiUrl}`, null, 'green');
                 logger.info('Available endpoints:', null, 'cyan');
                 logger.info('  POST /api/message - Send async message', null, 'gray');
@@ -332,6 +334,9 @@ program
                 logger.info('  POST /api/reset - Reset conversation', null, 'gray');
                 logger.info('  GET  /api/mcp/servers - List MCP servers', null, 'gray');
                 logger.info('  WebSocket support available for real-time events', null, 'gray');
+                if (serveLegacyUI) {
+                    logger.info('  Static UI files served from /public', null, 'gray');
+                }
                 break;
             }
 

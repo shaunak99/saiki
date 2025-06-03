@@ -1,100 +1,56 @@
-# syntax=docker/dockerfile:1
-
-# Comments are provided throughout this file to help you get started.
-# If you need more help, visit the Dockerfile reference guide at
-# https://docs.docker.com/go/dockerfile-reference/
-
-# Want to help us make this template better? Share your feedback here: https://forms.gle/ybq9Krt8jtBL3iCk7
+# Optimized Dockerfile for Railway deployment
+# Target size: <300MB (vs current 1.62GB)
 
 ARG NODE_VERSION=20.18.1
 
 ################################################################################
-# Base stage with common dependencies
-FROM node:${NODE_VERSION}-alpine AS base
+# Build stage - includes dev dependencies
+FROM node:${NODE_VERSION}-alpine AS builder
 
-# Install security updates and necessary packages
-RUN apk update && apk upgrade && \
-    apk add --no-cache \
-    chromium \
-    chromium-chromedriver \
-    ca-certificates \
-    tzdata \
-    && rm -rf /var/cache/apk/*
-
-# Set Puppeteer to use installed Chromium
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-
-# Set working directory
-WORKDIR /usr/src/app
-
-# Create non-root user for security
-RUN addgroup -g 1001 -S saiki && \
-    adduser -S saiki -u 1001
-
-################################################################################
-# Dependencies stage
-FROM base AS deps
+WORKDIR /app
 
 # Copy package files
-COPY package.json package-lock.json ./
+COPY package*.json ./
 
-# Install production dependencies only
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci --omit=dev --frozen-lockfile --ignore-scripts
+# Install all dependencies (dev + prod) for building
+RUN npm ci --frozen-lockfile --ignore-scripts
 
-################################################################################
-# Build stage
-FROM base AS build
-
-# Copy package files
-COPY package.json package-lock.json ./
-
-# Install all dependencies (including dev)
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci --frozen-lockfile --ignore-scripts
-
-# Copy source code
+# Copy source and build
 COPY . .
-
-# Build the application
-RUN npm run build
+RUN npm run build && npm prune --production
 
 ################################################################################
-# Production stage
-FROM base AS production
+# Production stage - minimal runtime
+FROM node:${NODE_VERSION}-alpine AS production
 
-# Set production environment
+# Only install if you need browser automation (skip for API-only)
+# RUN apk add --no-cache chromium
+
+WORKDIR /app
+
+# Create non-root user
+RUN addgroup -g 1001 -S saiki && adduser -S saiki -u 1001
+
+# Copy only production files
+COPY --from=builder --chown=saiki:saiki /app/dist ./dist
+COPY --from=builder --chown=saiki:saiki /app/node_modules ./node_modules
+COPY --from=builder --chown=saiki:saiki /app/package.json ./
+COPY --from=builder --chown=saiki:saiki /app/configuration ./configuration
+COPY --from=builder --chown=saiki:saiki /app/public ./public
+
+# Environment variables
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV FRONTEND_PORT=3000
-ENV API_PORT=3001
-ENV API_URL=http://localhost:3001
-ENV FRONTEND_URL=http://localhost:3000
 
 # Switch to non-root user
 USER saiki
 
-# Copy package.json for package manager commands
-COPY --chown=saiki:saiki package.json ./
-
-# Copy configuration files
-COPY --chown=saiki:saiki configuration ./configuration
-
-# Copy production dependencies
-COPY --from=deps --chown=saiki:saiki /usr/src/app/node_modules ./node_modules
-
-# Copy built application
-COPY --from=build --chown=saiki:saiki /usr/src/app/dist ./dist
-COPY --from=build --chown=saiki:saiki /usr/src/app/public ./public
-
-# Add healthcheck for API server
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD node -e "const http = require('http'); const options = { host: 'localhost', port: process.env.API_PORT || 3001, path: '/health' }; const req = http.request(options, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => process.exit(1)); req.end();" || exit 1
+  CMD node -e "const http = require('http'); const req = http.request({host:'localhost',port:process.env.PORT||3000,path:'/health'}, (res) => process.exit(res.statusCode === 200 ? 0 : 1)); req.on('error', () => process.exit(1)); req.end();"
 
-# Expose both frontend and API ports
-EXPOSE $FRONTEND_PORT $API_PORT
+# Single port for Railway
+EXPOSE $PORT
 
-# Default to web mode for containerized deployments
-ENTRYPOINT ["node", "dist/src/app/index.js"]
-CMD ["--mode", "web", "--web-port", "3000"]
+# Server mode with legacy UI: API + WebSocket + Static files all on port 3000
+CMD node dist/src/app/index.js --mode server --web-port $PORT 

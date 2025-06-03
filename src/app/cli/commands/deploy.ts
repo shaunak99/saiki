@@ -617,6 +617,8 @@ primary_region = "lax"
 [env]
   NODE_ENV = "${config.environment}"
   PORT = "3000"
+  FRONTEND_PORT = "3000"
+  API_PORT = "3000"
 
 [http_service]
   internal_port = 3000
