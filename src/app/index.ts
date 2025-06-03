@@ -33,6 +33,8 @@ import { initSaiki, postInitSaiki } from './cli/commands/init.js';
 import { getUserInputToInitSaikiApp } from './cli/commands/init.js';
 import { checkForFileInCurrentDirectory, FileNotFoundError } from './cli/utils/package-mgmt.js';
 import { startNextJsWebServer } from './web.js';
+import { deployAgent } from './cli/commands/deploy.js';
+
 // Load environment variables
 dotenv.config();
 
@@ -130,7 +132,30 @@ program
         }
     });
 
-// 4) Interactive/One shot (CLI/HEADLESS) or run in other modes (--mode web/discord/telegram)
+// 4) `deploy` SUB-COMMAND
+program
+    .command('deploy')
+    .description('Deploy Saiki agents to various platforms (Docker, Railway, Render, Fly.io)')
+    .option('-m, --mode <mode>', 'Deployment mode: web, server, discord, telegram, custom')
+    .option('-c, --config-file <path>', 'Path to config file for custom mode')
+    .option(
+        '-p, --platform <platform>',
+        'Deployment platform: docker, docker-compose, railway, render, fly'
+    )
+    .option('-e, --environment <env>', 'Environment: development, staging, production')
+    .option('--port <port>', 'Port number for web/server modes', parseInt)
+    .option('-n, --name <name>', 'Name for the agent deployment')
+    .option('--dry-run', 'Show what would be executed without actually running commands')
+    .action(async (options) => {
+        try {
+            await deployAgent(options);
+        } catch (err) {
+            logger.error(`Deploy command failed: ${err}`);
+            process.exit(1);
+        }
+    });
+
+// 5) Interactive/One shot (CLI/HEADLESS) or run in other modes (--mode web/discord/telegram)
 program
     .argument(
         '[prompt...]',
@@ -318,5 +343,5 @@ program
         }
     });
 
-// 5) PARSE & EXECUTE
+// 6) PARSE & EXECUTE
 program.parseAsync(process.argv);

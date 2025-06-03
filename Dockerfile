@@ -9,67 +9,92 @@
 ARG NODE_VERSION=20.18.1
 
 ################################################################################
-# Use node image for base image for all stages.
+# Base stage with common dependencies
 FROM node:${NODE_VERSION}-alpine AS base
 
-# Set working directory for all build stages.
+# Install security updates and necessary packages
+RUN apk update && apk upgrade && \
+    apk add --no-cache \
+    chromium \
+    chromium-chromedriver \
+    ca-certificates \
+    tzdata \
+    && rm -rf /var/cache/apk/*
+
+# Set Puppeteer to use installed Chromium
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
+# Set working directory
 WORKDIR /usr/src/app
 
+# Create non-root user for security
+RUN addgroup -g 1001 -S saiki && \
+    adduser -S saiki -u 1001
 
 ################################################################################
-# Create a stage for installing production dependecies.
+# Dependencies stage
 FROM base AS deps
 
-# Download dependencies as a separate step to take advantage of Docker's caching.
-# Leverage a cache mount to /root/.npm to speed up subsequent builds.
-# Leverage bind mounts to package.json and package-lock.json to avoid having to copy them
-# into this layer.
-RUN --mount=type=bind,source=package.json,target=package.json \
-    --mount=type=bind,source=package-lock.json,target=package-lock.json \
-    --mount=type=cache,target=/root/.npm \
-    npm ci --omit=dev
+# Copy package files
+COPY package.json package-lock.json ./
+
+# Install production dependencies only
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev --frozen-lockfile --ignore-scripts
 
 ################################################################################
-# Create a stage for building the application.
-FROM deps AS build
+# Build stage
+FROM base AS build
 
-# Download additional development dependencies before building, as some projects require
-# "devDependencies" to be installed to build. If you don't need this, remove this step.
-RUN --mount=type=bind,source=package.json,target=package.json \
-    --mount=type=bind,source=package-lock.json,target=package-lock.json \
-    --mount=type=cache,target=/root/.npm \
-    npm ci
+# Copy package files
+COPY package.json package-lock.json ./
 
-# Copy the rest of the source files into the image.
+# Install all dependencies (including dev)
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --frozen-lockfile --ignore-scripts
+
+# Copy source code
 COPY . .
-# Run the build script.
+
+# Build the application
 RUN npm run build
 
 ################################################################################
-# Create a new stage to run the application with minimal runtime dependencies
-# where the necessary files are copied from the build stage.
-FROM base AS final
+# Production stage
+FROM base AS production
 
-# Use production node environment by default.
+# Set production environment
 ENV NODE_ENV=production
+ENV PORT=3000
+ENV FRONTEND_PORT=3000
+ENV API_PORT=3001
+ENV API_URL=http://localhost:3001
+ENV FRONTEND_URL=http://localhost:3000
 
-# Run the application as a non-root user.
-USER node
+# Switch to non-root user
+USER saiki
 
-# Copy package.json so that package manager commands can be used.
-COPY package.json .
+# Copy package.json for package manager commands
+COPY --chown=saiki:saiki package.json ./
+
 # Copy configuration files
-COPY configuration ./configuration
+COPY --chown=saiki:saiki configuration ./configuration
 
-# Copy the production dependencies from the deps stage and also
-# the built application from the build stage into the image.
-COPY --from=deps /usr/src/app/node_modules ./node_modules
-COPY --from=build /usr/src/app/dist ./dist
+# Copy production dependencies
+COPY --from=deps --chown=saiki:saiki /usr/src/app/node_modules ./node_modules
 
+# Copy built application
+COPY --from=build --chown=saiki:saiki /usr/src/app/dist ./dist
+COPY --from=build --chown=saiki:saiki /usr/src/app/public ./public
 
-# Expose the port that the application listens on.
-EXPOSE 3000
+# Add healthcheck for API server
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD node -e "const http = require('http'); const options = { host: 'localhost', port: process.env.API_PORT || 3001, path: '/health' }; const req = http.request(options, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => process.exit(1)); req.end();" || exit 1
 
-# Run the application.
-ENTRYPOINT ["npm", "start"]
-CMD []
+# Expose both frontend and API ports
+EXPOSE $FRONTEND_PORT $API_PORT
+
+# Default to web mode for containerized deployments
+ENTRYPOINT ["node", "dist/src/app/index.js"]
+CMD ["--mode", "web", "--web-port", "3000"]

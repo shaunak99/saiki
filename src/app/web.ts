@@ -62,7 +62,20 @@ export async function startNextJsWebServer(
             }
         })();
 
+        // Determine if we're running in a Docker container
+        const isDocker = existsSync('/.dockerenv') || process.env.DOCKER_CONTAINER === 'true';
+
+        // Set WebSocket URL based on environment
+        const wsUrl =
+            process.env.NEXT_PUBLIC_WS_URL ||
+            (isDocker ? `ws://localhost:${apiPort}` : `ws://localhost:${apiPort}`);
+
+        // Set public API URL for browser connections
+        const publicApiUrl = process.env.NEXT_PUBLIC_API_URL || apiUrl;
+
         logger.info(`Starting Next.js production server on ${frontUrl}`, null, 'cyanBright');
+        logger.debug(`API URL: ${apiUrl}, Public API URL: ${publicApiUrl}`, null, 'gray');
+        logger.debug(`WebSocket URL: ${wsUrl}, Docker mode: ${isDocker}`, null, 'gray');
 
         // Use the server.js script if it exists, otherwise use the standalone server directly
         const serverToUse = existsSync(serverScriptPath) ? serverScriptPath : standaloneServerPath;
@@ -78,8 +91,8 @@ export async function startNextJsWebServer(
                 API_PORT: String(apiPort),
                 API_URL: apiUrl,
                 FRONTEND_URL: frontUrl,
-                NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL ?? apiUrl,
-                NEXT_PUBLIC_WS_URL: process.env.NEXT_PUBLIC_WS_URL ?? `ws://localhost:${apiPort}`,
+                NEXT_PUBLIC_API_URL: publicApiUrl,
+                NEXT_PUBLIC_WS_URL: wsUrl,
                 NEXT_PUBLIC_FRONTEND_URL: process.env.NEXT_PUBLIC_FRONTEND_URL ?? frontUrl,
             },
         });
@@ -170,6 +183,17 @@ async function startDevServer(
             }
         })();
 
+        // Determine if we're running in a Docker container
+        const isDocker = existsSync('/.dockerenv') || process.env.DOCKER_CONTAINER === 'true';
+
+        // Set WebSocket URL based on environment
+        const wsUrl =
+            process.env.NEXT_PUBLIC_WS_URL ||
+            (isDocker ? `ws://localhost:${apiPort}` : `ws://localhost:${apiPort}`);
+
+        // Set public API URL for browser connections
+        const publicApiUrl = process.env.NEXT_PUBLIC_API_URL || apiUrl;
+
         // Check if node_modules exists
         const nodeModulesPath = path.join(webuiPath, 'node_modules');
         const needsInstall = !existsSync(nodeModulesPath);
@@ -193,6 +217,8 @@ async function startDevServer(
         }
 
         logger.info(`Starting Next.js dev server on ${frontUrl}`, null, 'cyanBright');
+        logger.debug(`API URL: ${apiUrl}, Public API URL: ${publicApiUrl}`, null, 'gray');
+        logger.debug(`WebSocket URL: ${wsUrl}, Docker mode: ${isDocker}`, null, 'gray');
 
         const nextProc = spawn('npm', ['run', 'dev', '--', '--port', String(frontPort)], {
             cwd: webuiPath,
@@ -203,8 +229,8 @@ async function startDevServer(
                 API_PORT: String(apiPort),
                 API_URL: apiUrl,
                 FRONTEND_URL: frontUrl,
-                NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL ?? apiUrl,
-                NEXT_PUBLIC_WS_URL: process.env.NEXT_PUBLIC_WS_URL ?? `ws://localhost:${apiPort}`,
+                NEXT_PUBLIC_API_URL: publicApiUrl,
+                NEXT_PUBLIC_WS_URL: wsUrl,
                 NEXT_PUBLIC_FRONTEND_URL: process.env.NEXT_PUBLIC_FRONTEND_URL ?? frontUrl,
             },
         });

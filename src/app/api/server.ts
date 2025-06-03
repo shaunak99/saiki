@@ -53,6 +53,32 @@ export async function initializeApi(agent: SaikiAgent, agentCardOverride?: Parti
         }
     });
 
+    // Health check endpoint for container monitoring and load balancers
+    app.get('/health', (req, res) => {
+        try {
+            const health = {
+                status: 'healthy',
+                timestamp: new Date().toISOString(),
+                uptime: process.uptime(),
+                version: process.env.npm_package_version || 'unknown',
+                environment: process.env.NODE_ENV || 'development',
+                memory: process.memoryUsage(),
+                agent: {
+                    connected_mcp_servers: agent.getMcpClients().size,
+                    failed_connections: Object.keys(agent.getMcpFailedConnections()).length,
+                },
+            };
+            res.status(200).json(health);
+        } catch (error) {
+            logger.error(`Health check failed: ${error}`);
+            res.status(503).json({
+                status: 'unhealthy',
+                timestamp: new Date().toISOString(),
+                error: error instanceof Error ? error.message : 'Unknown error',
+            });
+        }
+    });
+
     // Synchronous endpoint: await the full AI response and return it in one go
     app.post('/api/message-sync', express.json(), async (req, res) => {
         logger.info('Received message via POST /api/message-sync');
@@ -154,8 +180,8 @@ export async function initializeApi(agent: SaikiAgent, agentCardOverride?: Parti
             const tools = Object.entries(toolsMap).map(([toolName, toolDef]) => ({
                 id: toolName,
                 name: toolName,
-                description: toolDef.description,
-                inputSchema: toolDef.parameters,
+                description: (toolDef as any).description,
+                inputSchema: (toolDef as any).parameters,
             }));
             res.status(200).json({ tools });
         } catch (error: any) {
@@ -533,7 +559,7 @@ export async function initializeApi(agent: SaikiAgent, agentCardOverride?: Parti
                 return res.status(404).json({ error: 'Session not found' });
             }
 
-            await agent.resetSession(sessionId);
+            await agent.resetConversation(sessionId);
             res.json({ status: 'reset', sessionId });
         } catch (error) {
             logger.error(`Error resetting session ${req.params.sessionId}: ${error.message}`);
