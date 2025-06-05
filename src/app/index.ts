@@ -320,23 +320,22 @@ program
                 // Start server with REST APIs and WebSockets only
                 const webPort = parseInt(opts.webPort, 10);
                 const agentCard = agent.getEffectiveConfig().agentCard ?? {};
-                const apiPort = getPort(process.env.API_PORT, webPort + 1, 'API_PORT');
-                const apiUrl = process.env.API_URL ?? `http://localhost:${apiPort}`;
+                // Use the provided port directly for deployment platforms
+                const serverPort = webPort;
+                const serverUrl = process.env.SAIKI_BASE_URL ?? `http://localhost:${serverPort}`;
 
                 logger.info('Starting server (REST APIs + WebSockets)...', null, 'cyanBright');
-                // Enable legacy UI for cloud deployment (serves static files)
-                const serveLegacyUI = process.env.NODE_ENV === 'production';
-                await startApiAndLegacyWebUIServer(agent, apiPort, serveLegacyUI, agentCard);
-                logger.info(`Server running at ${apiUrl}`, null, 'green');
+                // Disable legacy UI for cleaner deployment - only REST APIs and WebSockets
+                await startApiAndLegacyWebUIServer(agent, serverPort, false, agentCard);
+                logger.info(`Server running at ${serverUrl}`, null, 'green');
                 logger.info('Available endpoints:', null, 'cyan');
                 logger.info('  POST /api/message - Send async message', null, 'gray');
                 logger.info('  POST /api/message-sync - Send sync message', null, 'gray');
                 logger.info('  POST /api/reset - Reset conversation', null, 'gray');
                 logger.info('  GET  /api/mcp/servers - List MCP servers', null, 'gray');
+                logger.info('  GET  /health - Health check', null, 'gray');
                 logger.info('  WebSocket support available for real-time events', null, 'gray');
-                if (serveLegacyUI) {
-                    logger.info('  Static UI files served from /public', null, 'gray');
-                }
+                logger.info('Server ready for deployment on single port', null, 'green');
                 break;
             }
 

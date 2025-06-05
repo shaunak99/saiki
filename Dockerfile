@@ -1,6 +1,5 @@
-# Optimized Dockerfile for Railway deployment
-# Target size: <300MB (vs current 1.62GB)
-
+################################################################################
+# Build stage - includes dev dependencies
 ARG NODE_VERSION=20.18.1
 
 ################################################################################
@@ -36,7 +35,6 @@ COPY --from=builder --chown=saiki:saiki /app/dist ./dist
 COPY --from=builder --chown=saiki:saiki /app/node_modules ./node_modules
 COPY --from=builder --chown=saiki:saiki /app/package.json ./
 COPY --from=builder --chown=saiki:saiki /app/configuration ./configuration
-COPY --from=builder --chown=saiki:saiki /app/public ./public
 
 # Environment variables
 ENV NODE_ENV=production
@@ -49,8 +47,8 @@ USER saiki
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD node -e "const http = require('http'); const req = http.request({host:'localhost',port:process.env.PORT||3000,path:'/health'}, (res) => process.exit(res.statusCode === 200 ? 0 : 1)); req.on('error', () => process.exit(1)); req.end();"
 
-# Single port for Railway
+# Single port for deployment platform
 EXPOSE $PORT
 
-# Server mode with legacy UI: API + WebSocket + Static files all on port 3000
+# Server mode: REST APIs + WebSocket on single port
 CMD node dist/src/app/index.js --mode server --web-port $PORT 
