@@ -157,13 +157,38 @@ async function getDeploymentConfig(options: DeployOptions): Promise<DeploymentCo
         config.mode = (await p.select({
             message: 'Select deployment mode:',
             options: [
-                { value: 'web', label: '🌐 Web UI - Interactive web interface' },
-                { value: 'server', label: '⚡ Server - REST API + WebSocket endpoints only' },
+                {
+                    value: 'server',
+                    label: '⚡ Server - REST API + WebSocket endpoints (Recommended for deployment)',
+                },
+                {
+                    value: 'web',
+                    label: '🌐 Web UI - Interactive web interface (Local development only)',
+                },
                 { value: 'discord', label: '🤖 Discord Bot - Discord integration' },
                 { value: 'telegram', label: '📱 Telegram Bot - Telegram integration' },
                 { value: 'custom', label: '⚙️  Custom - Use specific config file' },
             ],
         })) as string;
+    }
+
+    // Warn about web mode on cloud platforms
+    if (
+        config.mode === 'web' &&
+        options.platform &&
+        ['railway', 'render', 'fly'].includes(options.platform)
+    ) {
+        logger.warn(
+            'Web mode requires two ports and may not work on cloud platforms. Consider using server mode instead.'
+        );
+        const shouldContinue = await p.confirm({
+            message: 'Continue with web mode deployment?',
+            initialValue: false,
+        });
+        if (!shouldContinue) {
+            logger.info('Switching to server mode for cloud deployment...');
+            config.mode = 'server';
+        }
     }
 
     // Config file selection
@@ -214,8 +239,8 @@ async function getDeploymentConfig(options: DeployOptions): Promise<DeploymentCo
         })) as string;
     }
 
-    // Port configuration
-    const defaultPort = config.mode === 'web' ? 3000 : config.mode === 'server' ? 3001 : 3000;
+    // Port configuration - for server mode, use a single port
+    const defaultPort = config.mode === 'server' ? 3001 : 3000;
     config.port = options.port || defaultPort;
 
     // Generate derived properties
@@ -290,15 +315,26 @@ async function deployToDocker(config: DeploymentConfig): Promise<void> {
         logger.debug(`Docker run output: ${runOutput}`);
         spinner.stop('Container started successfully');
 
-        if (config.mode === 'web') {
+        // Provide appropriate feedback based on mode
+        if (config.mode === 'server') {
+            logger.info(`🔌 Server available at: http://localhost:${config.port}`);
+            logger.info(`🔗 WebSocket endpoint: ws://localhost:${config.port}`);
+            logger.info(`📋 Health check: http://localhost:${config.port}/health`);
+            logger.info(`📖 API endpoints:`);
+            logger.info(`  POST /api/message - Send async message`);
+            logger.info(`  POST /api/message-sync - Send sync message`);
+            logger.info(`  POST /api/reset - Reset conversation`);
+            logger.info(`  GET  /api/mcp/servers - List MCP servers`);
+        } else if (config.mode === 'web') {
             const frontendPort = config.port;
             const apiPort = config.port + 1;
             logger.info(`🌐 Frontend available at: http://localhost:${frontendPort}`);
             logger.info(`🔌 API server available at: http://localhost:${apiPort}`);
             logger.info(`🔗 WebSocket endpoint: ws://localhost:${apiPort}`);
-        } else if (config.mode === 'server') {
-            logger.info(`🔌 API server available at: http://localhost:${config.port}`);
-            logger.info(`🔗 WebSocket endpoint: ws://localhost:${config.port}`);
+        } else if (config.mode === 'discord') {
+            logger.info(`🤖 Discord bot is running`);
+        } else if (config.mode === 'telegram') {
+            logger.info(`📱 Telegram bot is running`);
         }
 
         logger.info(`📦 Container name: ${config.containerName}`);
@@ -350,15 +386,17 @@ async function deployToDockerCompose(config: DeploymentConfig): Promise<void> {
         });
         spinner.stop('Deployed successfully with Docker Compose');
 
-        if (config.mode === 'web') {
+        // Provide appropriate feedback based on mode
+        if (config.mode === 'server') {
+            logger.info(`🔌 Server available at: http://localhost:${config.port}`);
+            logger.info(`🔗 WebSocket endpoint: ws://localhost:${config.port}`);
+            logger.info(`📋 Health check: http://localhost:${config.port}/health`);
+        } else if (config.mode === 'web') {
             const frontendPort = config.port;
             const apiPort = config.port + 1;
             logger.info(`🌐 Frontend available at: http://localhost:${frontendPort}`);
             logger.info(`🔌 API server available at: http://localhost:${apiPort}`);
             logger.info(`🔗 WebSocket endpoint: ws://localhost:${apiPort}`);
-        } else if (config.mode === 'server') {
-            logger.info(`🔌 API server available at: http://localhost:${config.port}`);
-            logger.info(`🔗 WebSocket endpoint: ws://localhost:${config.port}`);
         }
     } catch (error) {
         spinner.stop('Docker Compose deployment failed');
@@ -485,39 +523,62 @@ function getAvailableConfigFiles(): string[] {
 
 function generateDockerRunCommand(config: DeploymentConfig): string {
     const envFile = existsSync('.env') ? '--env-file .env' : '';
-    const modeArgs =
-        config.mode === 'custom'
-            ? `--config-file /usr/src/app/agent-config.yml --mode web`
-            : `--mode ${config.mode}`;
 
     const volumeMounts =
         config.mode === 'custom'
             ? `-v ${path.resolve(config.configFile)}:/usr/src/app/agent-config.yml:ro`
             : '';
 
-    // Handle port mapping based on mode
+    // Handle port mapping and internal container configuration
     let portMapping = '';
-    if (config.mode === 'web') {
-        // Web mode needs both frontend and API ports
+    const containerEnv = [];
+
+    if (config.mode === 'server') {
+        // Server mode: single port mapping to internal port 3001
+        portMapping = `-p ${config.port}:3001`;
+        containerEnv.push(`-e PORT=3001`);
+        containerEnv.push(`-e API_PORT=3001`);
+    } else if (config.mode === 'web') {
+        // Web mode: dual port setup (for local Docker only)
         const frontendPort = config.port;
         const apiPort = config.port + 1;
         portMapping = `-p ${frontendPort}:3000 -p ${apiPort}:3001`;
-    } else if (config.mode === 'server') {
-        // Server mode only needs API port
-        portMapping = `-p ${config.port}:3001`;
-    }
-
-    // Set container environment variables for proper port configuration
-    const containerEnv = [];
-    if (config.mode === 'web') {
         containerEnv.push(`-e FRONTEND_PORT=3000`);
         containerEnv.push(`-e API_PORT=3001`);
-        containerEnv.push(`-e API_URL=http://localhost:3001`);
-        containerEnv.push(`-e FRONTEND_URL=http://localhost:3000`);
-        containerEnv.push(`-e NEXT_PUBLIC_API_URL=http://localhost:${config.port + 1}`);
-        containerEnv.push(`-e NEXT_PUBLIC_WS_URL=ws://localhost:${config.port + 1}`);
+        containerEnv.push(`-e NEXT_PUBLIC_API_URL=http://localhost:${apiPort}`);
+        containerEnv.push(`-e NEXT_PUBLIC_WS_URL=ws://localhost:${apiPort}`);
+    } else if (config.mode === 'discord' || config.mode === 'telegram') {
+        // Bot modes don't need port mapping
+        portMapping = '';
+    } else {
+        // Default fallback
+        portMapping = `-p ${config.port}:3001`;
+        containerEnv.push(`-e PORT=3001`);
+    }
+
+    // Build the complete command - override the CMD entirely
+    const dockerCmd = [];
+    if (config.mode === 'custom') {
+        dockerCmd.push(
+            'node',
+            'dist/src/app/index.js',
+            '--config-file',
+            '/usr/src/app/agent-config.yml',
+            '--mode',
+            'web',
+            '--web-port',
+            '3000'
+        );
     } else if (config.mode === 'server') {
-        containerEnv.push(`-e API_PORT=3001`);
+        dockerCmd.push('node', 'dist/src/app/index.js', '--mode', 'server', '--web-port', '3001');
+    } else if (config.mode === 'web') {
+        dockerCmd.push('node', 'dist/src/app/index.js', '--mode', 'web', '--web-port', '3000');
+    } else if (config.mode === 'discord') {
+        dockerCmd.push('node', 'dist/src/app/index.js', '--mode', 'discord');
+    } else if (config.mode === 'telegram') {
+        dockerCmd.push('node', 'dist/src/app/index.js', '--mode', 'telegram');
+    } else {
+        dockerCmd.push('node', 'dist/src/app/index.js', '--mode', config.mode);
     }
 
     return [
@@ -529,12 +590,7 @@ function generateDockerRunCommand(config: DeploymentConfig): string {
         volumeMounts,
         `--restart unless-stopped`,
         config.imageTag,
-        modeArgs,
-        config.mode === 'web'
-            ? `--web-port 3000`
-            : config.mode === 'server'
-              ? `--web-port 3001`
-              : '',
+        ...dockerCmd,
     ]
         .filter(Boolean)
         .join(' ');
@@ -544,17 +600,27 @@ function generateComposeOverride(config: DeploymentConfig): string {
     const serviceName = config.mode === 'custom' ? 'agent' : config.mode;
 
     let ports = '';
-    if (config.mode === 'web') {
-        // Web mode needs both frontend and API ports
+    let environment = `- NODE_ENV=${config.environment}`;
+
+    if (config.mode === 'server') {
+        // Server mode: single port mapping
+        ports = `ports:
+      - "${config.port}:3001"`;
+        environment += `
+      - PORT=3001
+      - API_PORT=3001`;
+    } else if (config.mode === 'web') {
+        // Web mode: dual port setup (for local development)
         const frontendPort = config.port;
         const apiPort = config.port + 1;
         ports = `ports:
       - "${frontendPort}:3000"
       - "${apiPort}:3001"`;
-    } else if (config.mode === 'server') {
-        // Server mode only needs API port
-        ports = `ports:
-      - "${config.port}:3001"`;
+        environment += `
+      - FRONTEND_PORT=3000
+      - API_PORT=3001
+      - NEXT_PUBLIC_API_URL=http://localhost:${apiPort}
+      - NEXT_PUBLIC_WS_URL=ws://localhost:${apiPort}`;
     }
 
     return `# Generated override for ${config.name}
@@ -562,36 +628,58 @@ services:
   ${serviceName}:
     container_name: ${config.containerName}
     environment:
-      - NODE_ENV=${config.environment}
-      ${
-          config.mode === 'web'
-              ? `- FRONTEND_PORT=3000
-      - API_PORT=3001
-      - API_URL=http://localhost:3001
-      - FRONTEND_URL=http://localhost:3000
-      - NEXT_PUBLIC_API_URL=http://localhost:${config.port + 1}
-      - NEXT_PUBLIC_WS_URL=ws://localhost:${config.port + 1}`
-              : config.mode === 'server'
-                ? `- API_PORT=3001`
-                : ''
-      }
+      ${environment}
     ${ports}
 `;
 }
 
 function generateRailwayConfig(config: DeploymentConfig): object {
+    // Railway uses a single $PORT environment variable
+    let startCommand = '';
+
+    if (config.mode === 'web') {
+        // Web mode should use the PORT for the frontend, API will be on PORT+1
+        startCommand = `node dist/src/app/index.js --mode ${config.mode} --web-port $PORT`;
+    } else if (config.mode === 'server') {
+        // Server mode uses the PORT directly for the API
+        startCommand = `node dist/src/app/index.js --mode ${config.mode} --web-port $PORT`;
+    } else if (config.mode === 'custom') {
+        // Custom mode defaults to web behavior
+        startCommand = `node dist/src/app/index.js --mode ${config.mode} --web-port $PORT --config-file ${config.configFile}`;
+    } else {
+        // Discord, Telegram, etc. don't need web-port
+        startCommand = `node dist/src/app/index.js --mode ${config.mode}`;
+    }
+
     return {
         build: {
             dockerfile: 'Dockerfile',
         },
         deploy: {
-            startCommand: `node dist/src/app/index.js --mode ${config.mode} --web-port $PORT ${config.mode === 'custom' ? `--config-file ${config.configFile}` : ''}`,
+            startCommand,
             restartPolicyType: 'always',
         },
     };
 }
 
 function generateRenderConfig(config: DeploymentConfig): string {
+    // Render expects a single PORT environment variable
+    let startCommand = '';
+
+    if (config.mode === 'web') {
+        // Web mode: use PORT for frontend
+        startCommand = `node dist/src/app/index.js --mode ${config.mode} --web-port $PORT`;
+    } else if (config.mode === 'server') {
+        // Server mode: use PORT for API
+        startCommand = `node dist/src/app/index.js --mode ${config.mode} --web-port $PORT`;
+    } else if (config.mode === 'custom') {
+        // Custom mode with config file
+        startCommand = `node dist/src/app/index.js --mode ${config.mode} --web-port $PORT --config-file ${config.configFile}`;
+    } else {
+        // Discord, Telegram, etc. don't need web-port
+        startCommand = `node dist/src/app/index.js --mode ${config.mode}`;
+    }
+
     return `services:
   - type: web
     name: ${config.name}
@@ -602,23 +690,40 @@ function generateRenderConfig(config: DeploymentConfig): string {
       - key: NODE_ENV
         value: ${config.environment}
       - key: PORT
-        value: "3000"
-    startCommand: node dist/src/app/index.js --mode ${config.mode} --web-port 3000 ${config.mode === 'custom' ? `--config-file ${config.configFile}` : ''}
+        value: "10000"
+    startCommand: ${startCommand}
 `;
 }
 
 function generateFlyConfig(config: DeploymentConfig): string {
+    // Fly.io uses internal_port for routing, but the app needs to know what port to bind to
+    // For single-port deployments (server mode), use PORT
+    // For web mode, Fly.io can't handle dual-port apps easily, so we'll use server mode approach
+
+    let envVars = `[env]
+  NODE_ENV = "${config.environment}"`;
+
+    if (config.mode === 'web') {
+        // Web mode on Fly.io - use single port approach (server mode)
+        envVars += `
+  PORT = "3000"`;
+    } else if (config.mode === 'server') {
+        // Server mode - single port
+        envVars += `
+  PORT = "3000"`;
+    } else {
+        // Other modes (discord, telegram) don't need HTTP ports
+        envVars += `
+  PORT = "3000"`;
+    }
+
     return `app = "${config.name}"
 primary_region = "lax"
 
 [build]
   dockerfile = "Dockerfile"
 
-[env]
-  NODE_ENV = "${config.environment}"
-  PORT = "3000"
-  FRONTEND_PORT = "3000"
-  API_PORT = "3000"
+${envVars}
 
 [http_service]
   internal_port = 3000
