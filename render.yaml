@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: my-saiki-agent
+    env: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+    startCommand: node dist/src/app/index.js --mode server --web-port $PORT
