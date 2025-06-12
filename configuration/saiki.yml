@@ -1,7 +1,7 @@
 # describes the mcp servers to use
 mcpServers:
-  filesystem: {type: stdio, command: npx, args: ["-y", "@modelcontextprotocol/server-filesystem", "."]}
-  puppeteer: {type: stdio, command: npx, args: ["-y", "@truffle-ai/puppeteer-server"]}
+  filesystem: {type: stdio, command: npx, args: ["-y", "@modelcontextprotocol/server-filesystem", "."], timeout: 120000}
+  puppeteer: {type: stdio, command: npx, args: ["-y", "@truffle-ai/puppeteer-server"], timeout: 180000}
 
 # # describes the llm configuration
 llm:

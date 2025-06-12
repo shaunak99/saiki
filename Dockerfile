@@ -12,7 +12,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install all dependencies (dev + prod) for building
-RUN npm ci --frozen-lockfile --ignore-scripts
+RUN npm install --include=dev --ignore-scripts
 
 # Copy source and build
 COPY . .
@@ -22,8 +22,13 @@ RUN npm run build && npm prune --production
 # Production stage - minimal runtime
 FROM node:${NODE_VERSION}-alpine AS production
 
-# Only install if you need browser automation (skip for API-only)
-# RUN apk add --no-cache chromium
+# Install Chromium for puppeteer server
+RUN apk add --no-cache \
+    chromium \
+    harfbuzz \
+    nss \
+    freetype \
+    ttf-freefont
 
 WORKDIR /app
 
