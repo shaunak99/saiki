@@ -49,37 +49,7 @@ Fired when an MCP server connection attempt completes (success or failure).
 }
 ```
 
-#### `dexto:mcpServerAdded`
-
-Fired when an MCP server is added to the runtime state.
-
-```typescript
-{
-  serverName: string;
-  config: McpServerConfig;
-}
-```
-
-#### `dexto:mcpServerRemoved`
-
-Fired when an MCP server is removed from the runtime state.
-
-```typescript
-{
-  serverName: string;
-}
-```
-
-#### `dexto:mcpServerUpdated`
-
-Fired when an MCP server configuration is updated.
-
-```typescript
-{
-  serverName: string;
-  config: McpServerConfig;
-}
-```
+Note: MCP lifecycle events are currently surfaced primarily via `dexto:mcpServerConnected` and tool list changes via `dexto:availableToolsUpdated`.
 
 #### `dexto:availableToolsUpdated`
 
