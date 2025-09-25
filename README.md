@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://dexto.ai">
-    <img src="https://raw.githubusercontent.com/shaunak99/saiki/5973540671e2f6c099956069ebdf02df54ee1a8f/.github/assets/dexto-logo.svg" alt="Dexto" width="80%" style="max-width: 1000px" />
+    <img src="https://raw.githubusercontent.com/shaunak99/saiki/5973540671e2f6c099956069ebdf02df54ee1a8f/.github/assets/dexto-logo.svg" alt="Dexto" width="60%"/>
   </a>
 </p>
 
