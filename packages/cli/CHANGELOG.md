@@ -1,5 +1,20 @@
 # dexto
 
+## 1.1.12
+
+### Patch Changes
+
+- 3a65cde: Update older LLMs to new LLMs, update docs
+- 3f99854: Update docs, update agents to use newer LLMs, update readmes
+- 2940fbf: Add changeset for playground ui updates
+- 930d75a: Add mcp server restart feature and button in webUI
+- Updated dependencies [b51e4d9]
+- Updated dependencies [155813c]
+- Updated dependencies [3a65cde]
+- Updated dependencies [ecad345]
+- Updated dependencies [930d75a]
+    - @dexto/core@1.1.12
+
 ## 1.1.11
 
 ### Patch Changes

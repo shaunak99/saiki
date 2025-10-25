@@ -1,5 +1,22 @@
 # @dexto/webui
 
+## 0.1.9
+
+### Patch Changes
+
+- 72ef45c: Fix minor spinner bug
+- 3a65cde: Update older LLMs to new LLMs, update docs
+- 70a78ca: Update webUI to handle different sizes, mobile views, improve model picker UI
+- 2940fbf: Add changeset for playground ui updates
+- 930d75a: Add mcp server restart feature and button in webUI
+- 3fc6716: Add changeset for new servers & webui fixes.
+- Updated dependencies [b51e4d9]
+- Updated dependencies [155813c]
+- Updated dependencies [3a65cde]
+- Updated dependencies [ecad345]
+- Updated dependencies [930d75a]
+    - @dexto/core@1.1.12
+
 ## 0.1.8
 
 ### Patch Changes

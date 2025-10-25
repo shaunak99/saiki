@@ -1,5 +1,15 @@
 # @dexto/core
 
+## 1.1.12
+
+### Patch Changes
+
+- b51e4d9: Add changeset for blob mimetype check patch
+- 155813c: Add changeset for coding internal tools
+- 3a65cde: Update older LLMs to new LLMs, update docs
+- ecad345: Add changeset for allow/deny tool policies.
+- 930d75a: Add mcp server restart feature and button in webUI
+
 ## 1.1.11
 
 ### Patch Changes
