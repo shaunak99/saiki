@@ -12,7 +12,7 @@
 **An all-in-one toolkit to build agentic applications that turn natural language into real-world actions.**
 
 <div align="center">
-  <img src="https://github.com/user-attachments/assets/89d30349-0cb1-4160-85db-d99a80a71d7a" alt="Dexto Demo" width="700" />
+  <img src=".github/assets/sora_agent_demo.gif" alt="Dexto Demo" width="700" />
 </div>
 
 ## What is Dexto?
@@ -150,7 +150,7 @@ dexto --agent coding-agent "Can you create a snake game in a new folder and open
 
 Dexto agents are designed to be modular, composable and portable, allowing you to run them from anywhere. In this example, we connect to dexto as an MCP server via Cursor to use our podcast agent from above.
 
-<img src="https://github.com/user-attachments/assets/fd75a63f-4d29-447a-be24-6943e34c387f" alt="Email to Slack Demo" width="600">
+<img src=".github/assets/cursor_dexto_demo.gif" alt="Cursor Demo" width="600">
 
 
 
