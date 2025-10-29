@@ -1,5 +1,12 @@
 # @dexto/client-sdk
 
+## 1.2.5
+
+### Patch Changes
+
+- Updated dependencies [0fa6ef5]
+    - @dexto/core@1.2.5
+
 ## 1.2.4
 
 ### Patch Changes
