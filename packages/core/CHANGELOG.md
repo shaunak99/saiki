@@ -1,5 +1,11 @@
 # @dexto/core
 
+## 1.2.5
+
+### Patch Changes
+
+- 0fa6ef5: add gpt 5 codex
+
 ## 1.2.4
 
 ### Patch Changes
