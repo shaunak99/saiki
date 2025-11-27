@@ -1,5 +1,11 @@
 # @dexto/core
 
+## 1.3.1
+
+### Patch Changes
+
+- bd5c097: Add features check for internal tools, fix coding agent and logger agent elicitation
+
 ## 1.3.0
 
 ### Minor Changes
