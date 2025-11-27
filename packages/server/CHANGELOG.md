@@ -1,5 +1,13 @@
 # @dexto/server
 
+## 1.3.1
+
+### Patch Changes
+
+- Updated dependencies [bd5c097]
+    - @dexto/core@1.3.1
+    - @dexto/agent-management@1.3.1
+
 ## 1.3.0
 
 ### Minor Changes
