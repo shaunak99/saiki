@@ -56,6 +56,16 @@ const PostgresDatabaseSchema = BaseDatabaseSchema.extend({
 
 export type PostgresDatabaseConfig = z.output<typeof PostgresDatabaseSchema>;
 
+/**
+ * Unknown database configuration for custom/external implementations
+ */
+const UnknownDatabaseSchema = z
+    .object({
+        type: z.string().describe('Custom database type identifier'),
+    })
+    .passthrough()
+    .describe('Custom database configuration');
+
 // Database configuration using discriminated union
 export const DatabaseConfigSchema = z
     .discriminatedUnion(
@@ -72,6 +82,7 @@ export const DatabaseConfigSchema = z
             },
         }
     )
+    .or(UnknownDatabaseSchema)
     .describe('Database configuration')
     .superRefine((data, ctx) => {
         // Validate PostgreSQL requirements

@@ -33,7 +33,11 @@
  */
 
 // Main storage manager and utilities
-export { StorageManager, createStorageManager } from './storage-manager.js';
+export {
+    StorageManager,
+    createStorageManager,
+    type StorageBackendInstances,
+} from './storage-manager.js';
 
 // Storage interfaces
 export type { Cache } from './cache/types.js';

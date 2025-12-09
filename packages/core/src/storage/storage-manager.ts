@@ -12,6 +12,16 @@ import { DextoLogComponent } from '../logger/v2/types.js';
 const HEALTH_CHECK_KEY = 'storage_manager_health_check';
 
 /**
+ * Optional pre-configured storage backend instances for service injection.
+ * Used for custom storage implementations that aren't built into Dexto.
+ */
+export interface StorageBackendInstances {
+    cache?: Cache;
+    database?: Database;
+    blob?: BlobStore;
+}
+
+/**
  * Storage manager that initializes and manages storage backends.
  * Handles cache, database, and blob backends with automatic fallbacks.
  *
@@ -29,15 +39,22 @@ export class StorageManager {
     private initialized = false;
     private connected = false;
     private logger: IDextoLogger;
+    private instances: StorageBackendInstances | undefined;
 
-    constructor(config: ValidatedStorageConfig, logger: IDextoLogger) {
+    constructor(
+        config: ValidatedStorageConfig,
+        logger: IDextoLogger,
+        instances?: StorageBackendInstances
+    ) {
         this.config = config;
         this.logger = logger.createChild(DextoLogComponent.STORAGE);
+        this.instances = instances ?? undefined;
     }
 
     /**
      * Initialize storage instances without connecting.
      * This allows configuration and inspection before establishing connections.
+     * If instances were provided to the constructor, they will be validated and used.
      */
     async initialize(): Promise<void> {
         if (this.initialized) {
@@ -45,9 +62,14 @@ export class StorageManager {
         }
 
         // Create store instances (schema provides in-memory defaults, CLI enrichment adds filesystem paths)
-        this.cache = await createCache(this.config.cache, this.logger);
-        this.database = await createDatabase(this.config.database, this.logger);
-        this.blobStore = createBlobStore(this.config.blob, this.logger);
+        // Pass provided instances to factories for validation
+        this.cache = await createCache(this.config.cache, this.logger, this.instances?.cache);
+        this.database = await createDatabase(
+            this.config.database,
+            this.logger,
+            this.instances?.database
+        );
+        this.blobStore = createBlobStore(this.config.blob, this.logger, this.instances?.blob);
 
         this.initialized = true;
     }
@@ -261,12 +283,15 @@ export class StorageManager {
  * This is a convenience helper that combines initialization and connection.
  * Per-agent paths are provided via CLI enrichment layer before this point.
  * @param config Storage configuration with explicit paths
+ * @param logger Logger instance
+ * @param instances Optional pre-configured storage backend instances
  */
 export async function createStorageManager(
     config: ValidatedStorageConfig,
-    logger: IDextoLogger
+    logger: IDextoLogger,
+    instances?: StorageBackendInstances
 ): Promise<StorageManager> {
-    const manager = new StorageManager(config, logger);
+    const manager = new StorageManager(config, logger, instances);
     await manager.initialize();
     await manager.connect();
     return manager;

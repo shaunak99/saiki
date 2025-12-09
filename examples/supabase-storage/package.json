@@ -1,0 +1,30 @@
+{
+  "name": "supabase-storage-example",
+  "version": "1.0.0",
+  "description": "Example Supabase blob storage implementation for Dexto",
+  "type": "module",
+  "main": "dist/supabase-blob-store.js",
+  "scripts": {
+    "build": "tsc",
+    "example": "npm run build && node dist/example-usage.js",
+    "example:agent": "npm run build && node dist/dexto-agent-example.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "@dexto/core": "workspace:*",
+    "dotenv": "^16.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "keywords": [
+    "dexto",
+    "supabase",
+    "blob-storage",
+    "storage-backend",
+    "example"
+  ],
+  "author": "Dexto Team",
+  "license": "MIT"
+}

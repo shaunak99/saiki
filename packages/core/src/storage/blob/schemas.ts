@@ -66,7 +66,18 @@ const LocalBlobStoreSchema = z
 export type LocalBlobStoreConfig = z.output<typeof LocalBlobStoreSchema>;
 
 /**
+ * Unknown blob store configuration for custom/external implementations
+ */
+const UnknownBlobStoreSchema = z
+    .object({
+        type: z.string().describe('Custom blob store type identifier'),
+    })
+    .passthrough()
+    .describe('Custom blob store configuration');
+
+/**
  * Blob store configuration using discriminated union
+ * Supports built-in types (in-memory, local) and unknown types for extensibility
  */
 export const BlobStoreConfigSchema = z
     .discriminatedUnion('type', [InMemoryBlobStoreSchema, LocalBlobStoreSchema], {
@@ -79,6 +90,7 @@ export const BlobStoreConfigSchema = z
             return { message: ctx.defaultError };
         },
     })
+    .or(UnknownBlobStoreSchema)
     .describe('Blob store configuration');
 
 export type BlobStoreConfig = z.output<typeof BlobStoreConfigSchema>;

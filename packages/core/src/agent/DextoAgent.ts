@@ -50,6 +50,7 @@ import type { SearchOptions, SearchResponse, SessionSearchResponse } from '../se
 import { safeStringify } from '@core/utils/safe-stringify.js';
 import { deriveHeuristicTitle, generateSessionTitle } from '../session/title-generator.js';
 import type { ApprovalHandler } from '../approval/types.js';
+import type { StorageBackendInstances } from '../storage/index.js';
 
 const requiredServices: (keyof AgentServices)[] = [
     'mcpManager',
@@ -61,6 +62,18 @@ const requiredServices: (keyof AgentServices)[] = [
     'searchService',
     'memoryManager',
 ];
+
+/**
+ * Optional configuration for DextoAgent initialization.
+ * Used for advanced use cases requiring custom service implementations.
+ */
+export interface DextoAgentOptions {
+    /**
+     * Optional pre-configured storage backend instances.
+     * Used for custom storage implementations that aren't built into Dexto.
+     */
+    storageBackendInstances?: StorageBackendInstances;
+}
 
 /**
  * Interface for objects that can subscribe to the agent's event bus.
@@ -171,15 +184,20 @@ export class DextoAgent {
     // Logger instance for this agent (dependency injection)
     public readonly logger: IDextoLogger;
 
+    // Optional service injection options (e.g., custom storage backends)
+    private options: DextoAgentOptions | undefined;
+
     /**
      * Creates a DextoAgent instance.
      *
      * @param config - Agent configuration (validated and enriched)
      * @param configPath - Optional path to config file (for relative path resolution)
+     * @param options - Optional configuration for advanced use cases
      */
     constructor(
         config: AgentConfig,
-        private configPath?: string
+        private configPath?: string,
+        options?: DextoAgentOptions
     ) {
         // Validate and transform the input config
         this.config = AgentConfigSchema.parse(config);
@@ -194,6 +212,9 @@ export class DextoAgent {
 
         // Create event bus early so it's available for approval handler creation
         this.agentEventBus = new AgentEventBus();
+
+        // Store options for use in start()
+        this.options = options ?? undefined;
 
         // call start() to initialize services
         this.logger.info('DextoAgent created.');
@@ -216,11 +237,13 @@ export class DextoAgent {
 
             // Initialize all services asynchronously
             // Pass logger and eventBus to services for dependency injection
+            // Pass options for custom storage backend instances if provided
             const services = await createAgentServices(
                 this.config,
                 this.configPath,
                 this.logger,
-                this.agentEventBus
+                this.agentEventBus,
+                this.options
             );
 
             // Validate all required services are provided

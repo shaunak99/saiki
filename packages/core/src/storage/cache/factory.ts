@@ -16,19 +16,58 @@ let RedisStore: RedisStoreConstructor | null = null;
  * Create a cache store based on configuration.
  * Handles lazy loading of optional dependencies.
  * Throws StorageError.dependencyNotInstalled if required package is missing.
+ *
+ * Config-validated service injection pattern:
+ * - If providedInstance is given, validates that providedInstance.getStoreType() === config.type
+ * - If match, uses the provided instance
+ * - If mismatch, throws clear error
+ * - If no instance and unknown type, throws error explaining options
+ *
  * @param config Cache configuration
  * @param logger Logger instance for logging
+ * @param providedInstance Optional pre-configured cache instance
  */
-export async function createCache(config: CacheConfig, logger: IDextoLogger): Promise<Cache> {
-    switch (config.type) {
-        case 'redis':
-            return createRedisStore(config, logger);
-
-        case 'in-memory':
-        default:
-            logger.info('Using in-memory cache store');
-            return new MemoryCacheStore();
+export async function createCache(
+    config: CacheConfig,
+    logger: IDextoLogger,
+    providedInstance?: Cache
+): Promise<Cache> {
+    // If instance provided, validate it matches config type
+    if (providedInstance) {
+        const instanceType = providedInstance.getStoreType();
+        if (instanceType !== config.type) {
+            throw StorageError.configMismatch(
+                'cache',
+                config.type,
+                instanceType,
+                'The provided cache instance type does not match the config type. ' +
+                    'Either update the config to match the instance type, or provide a different instance.'
+            );
+        }
+        logger.info(`Using provided ${config.type} cache instance`);
+        return providedInstance;
     }
+
+    // No instance provided - use factory logic
+    if (config.type === 'redis') {
+        return createRedisStore(config as RedisCacheConfig, logger);
+    }
+
+    if (config.type === 'in-memory') {
+        logger.info('Using in-memory cache store');
+        return new MemoryCacheStore();
+    }
+
+    // Unknown type - custom implementation required
+    throw StorageError.unknownStoreType(
+        'cache',
+        config.type,
+        'To use a custom cache:\n' +
+            '  1. Declare the custom type in your config: { cache: { type: "my-custom-type", ... } }\n' +
+            '  2. Provide a Cache instance via DextoAgent options:\n' +
+            '     new DextoAgent(config, { storageBackendInstances: { cache: myCache } })\n' +
+            '  3. Ensure myCache.getStoreType() returns "my-custom-type"'
+    );
 }
 
 async function createRedisStore(config: RedisCacheConfig, logger: IDextoLogger): Promise<Cache> {

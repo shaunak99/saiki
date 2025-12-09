@@ -337,4 +337,37 @@ export class StorageError {
             }
         );
     }
+
+    // ==================== Service Injection Errors ====================
+
+    /**
+     * Config type and instance type mismatch
+     */
+    static configMismatch(
+        storeKind: string,
+        configType: string,
+        instanceType: string,
+        hint: string
+    ): DextoRuntimeError {
+        return new DextoRuntimeError(
+            StorageErrorCode.CONFIG_MISMATCH,
+            ErrorScope.STORAGE,
+            ErrorType.USER,
+            `${storeKind} store config type '${configType}' does not match provided instance type '${instanceType}'`,
+            { storeKind, configType, instanceType, hint }
+        );
+    }
+
+    /**
+     * Unknown store type with no provided instance
+     */
+    static unknownStoreType(storeKind: string, type: string, hint: string): DextoRuntimeError {
+        return new DextoRuntimeError(
+            StorageErrorCode.UNKNOWN_STORE_TYPE,
+            ErrorScope.STORAGE,
+            ErrorType.USER,
+            `Unknown ${storeKind} store type: ${type}`,
+            { storeKind, type, hint }
+        );
+    }
 }

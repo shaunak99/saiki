@@ -22,25 +22,62 @@ let PostgresStore: PostgresStoreConstructor | null = null;
  * Handles lazy loading of optional dependencies.
  * Throws StorageError.dependencyNotInstalled if required package is missing.
  * Database paths are provided via CLI enrichment layer.
+ *
+ * Config-validated service injection pattern:
+ * - If providedInstance is given, validates that providedInstance.getStoreType() === config.type
+ * - If match, uses the provided instance
+ * - If mismatch, throws clear error
+ * - If no instance and unknown type, throws error explaining options
+ *
  * @param config Database configuration with explicit paths
  * @param logger Logger instance for logging
+ * @param providedInstance Optional pre-configured database instance
  */
 export async function createDatabase(
     config: DatabaseConfig,
-    logger: IDextoLogger
+    logger: IDextoLogger,
+    providedInstance?: Database
 ): Promise<Database> {
-    switch (config.type) {
-        case 'postgres':
-            return createPostgresStore(config, logger);
-
-        case 'sqlite':
-            return createSQLiteStore(config, logger);
-
-        case 'in-memory':
-        default:
-            logger.info('Using in-memory database store');
-            return new MemoryDatabaseStore();
+    // If instance provided, validate it matches config type
+    if (providedInstance) {
+        const instanceType = providedInstance.getStoreType();
+        if (instanceType !== config.type) {
+            throw StorageError.configMismatch(
+                'database',
+                config.type,
+                instanceType,
+                'The provided database instance type does not match the config type. ' +
+                    'Either update the config to match the instance type, or provide a different instance.'
+            );
+        }
+        logger.info(`Using provided ${config.type} database instance`);
+        return providedInstance;
     }
+
+    // No instance provided - use factory logic
+    if (config.type === 'postgres') {
+        return createPostgresStore(config as PostgresDatabaseConfig, logger);
+    }
+
+    if (config.type === 'sqlite') {
+        return createSQLiteStore(config as SqliteDatabaseConfig, logger);
+    }
+
+    if (config.type === 'in-memory') {
+        logger.info('Using in-memory database store');
+        return new MemoryDatabaseStore();
+    }
+
+    // Unknown type - custom implementation required
+    throw StorageError.unknownStoreType(
+        'database',
+        config.type,
+        'To use a custom database:\n' +
+            '  1. Declare the custom type in your config: { database: { type: "my-custom-type", ... } }\n' +
+            '  2. Provide a Database instance via DextoAgent options:\n' +
+            '     new DextoAgent(config, { storageBackendInstances: { database: myDatabase } })\n' +
+            '  3. Ensure myDatabase.getStoreType() returns "my-custom-type"'
+    );
 }
 
 async function createPostgresStore(

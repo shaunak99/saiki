@@ -43,6 +43,16 @@ const RedisCacheSchema = BaseCacheSchema.extend({
 
 export type RedisCacheConfig = z.output<typeof RedisCacheSchema>;
 
+/**
+ * Unknown cache configuration for custom/external implementations
+ */
+const UnknownCacheSchema = z
+    .object({
+        type: z.string().describe('Custom cache type identifier'),
+    })
+    .passthrough()
+    .describe('Custom cache configuration');
+
 // Cache configuration using discriminated union
 export const CacheConfigSchema = z
     .discriminatedUnion('type', [InMemoryCacheSchema, RedisCacheSchema], {
@@ -55,6 +65,7 @@ export const CacheConfigSchema = z
             return { message: ctx.defaultError };
         },
     })
+    .or(UnknownCacheSchema)
     .describe('Cache configuration')
     .superRefine((data, ctx) => {
         // Validate Redis requirements

@@ -28,7 +28,11 @@ import { AgentStateManager } from '../agent/state-manager.js';
 import { SessionManager } from '../session/index.js';
 import { SearchService } from '../search/index.js';
 import { dirname, resolve } from 'path';
-import { createStorageManager, StorageManager } from '../storage/index.js';
+import {
+    createStorageManager,
+    StorageManager,
+    type StorageBackendInstances,
+} from '../storage/index.js';
 import { createAllowedToolsProvider } from '../tools/confirmation/allowed-tools-provider/factory.js';
 import type { IDextoLogger } from '../logger/v2/types.js';
 import type { ValidatedAgentConfig } from '@core/agent/schemas.js';
@@ -59,6 +63,14 @@ export type AgentServices = {
     pluginManager: PluginManager;
 };
 
+/**
+ * Optional service injection for advanced use cases.
+ * Used for custom storage implementations that aren't built into Dexto.
+ */
+export interface InitializeServicesOptions {
+    storageBackendInstances?: StorageBackendInstances;
+}
+
 // High-level factory to load, validate, and wire up all agent services in one call
 /**
  * Initializes all agent services from a validated configuration.
@@ -66,13 +78,15 @@ export type AgentServices = {
  * @param configPath Optional path to the config file (for relative path resolution)
  * @param logger Logger instance for this agent (dependency injection)
  * @param agentEventBus Pre-created event bus from DextoAgent constructor
+ * @param options Optional service injection options
  * @returns All the initialized services required for a Dexto agent
  */
 export async function createAgentServices(
     config: ValidatedAgentConfig,
     configPath: string | undefined,
     logger: IDextoLogger,
-    agentEventBus: AgentEventBus
+    agentEventBus: AgentEventBus,
+    options?: InitializeServicesOptions
 ): Promise<AgentServices> {
     // 0. Initialize telemetry FIRST (before any decorated classes are instantiated)
     // This must happen before creating any services that use @InstrumentClass decorator
@@ -86,8 +100,13 @@ export async function createAgentServices(
     logger.debug('Using pre-created agent event bus');
 
     // 2. Initialize storage manager (schema provides in-memory defaults, CLI enrichment adds filesystem paths)
+    // If storage backend instances are provided, pass them for validation and use
     logger.debug('Initializing storage manager');
-    const storageManager = await createStorageManager(config.storage, logger);
+    const storageManager = await createStorageManager(
+        config.storage,
+        logger,
+        options?.storageBackendInstances
+    );
 
     logger.debug('Storage manager initialized', {
         cache: config.storage.cache.type,
