@@ -1,5 +1,23 @@
 # @dexto/agent-management
 
+## 1.5.8
+
+### Patch Changes
+
+- 8687817: Add granular control for tools. /tools now allows you to view and update the following settings:
+    - Enable/disable tools by scope (session/global)
+    - Auto-approve tools for session (global scope updates can be added if required)
+- 9417803: Updated setup flow for OpenRouter with option to set maxInput tokens. Enabled /model to allow setting default model. Added toggle for auto-reading AGENTS.MD or other instructions file via `agentFile` param in config.
+- c49bc44: Introduced multi-task orchestration with background task tools, signals, and CLI panels; improved background task summaries/logging and cancellation handling; tightened LLM override persistence/restore safeguards; and migrated LLM execution to the Responses API.
+- Updated dependencies [8687817]
+- Updated dependencies [fc77b59]
+- Updated dependencies [9417803]
+- Updated dependencies [ef90f6f]
+- Updated dependencies [9990e4f]
+- Updated dependencies [c49bc44]
+    - @dexto/core@1.5.8
+    - @dexto/orchestration@1.5.8
+
 ## 1.5.7
 
 ### Patch Changes
