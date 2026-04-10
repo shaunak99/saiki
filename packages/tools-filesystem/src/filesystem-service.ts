@@ -5,7 +5,9 @@
  */
 
 import * as fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import * as path from 'node:path';
+import { createInterface } from 'node:readline';
 import { glob } from 'glob';
 import safeRegex from 'safe-regex';
 import { DextoRuntimeError, getDextoPath, Logger, DextoLogComponent } from '@dexto/core';
@@ -26,8 +28,11 @@ import {
     EditOperation,
     FileMetadata,
     DirectoryEntry,
+    FindPathsOptions,
+    FindPathsResult,
     ListDirectoryOptions,
     ListDirectoryResult,
+    PathMatch,
     CreateDirectoryOptions,
     CreateDirectoryResult,
     DeletePathOptions,
@@ -38,12 +43,30 @@ import {
 import { PathValidator } from './path-validator.js';
 import { FileSystemError } from './errors.js';
 import { detectMimeType, getMediaFileKind, isLikelyBinary, isTextMimeType } from './mime-utils.js';
+import { ripgrepFiles, ripgrepSearch } from './ripgrep-utils.js';
 
 const DEFAULT_ENCODING: BufferEncoding = 'utf-8';
 const DEFAULT_MAX_RESULTS = 1000;
 const DEFAULT_MAX_SEARCH_RESULTS = 100;
 const DEFAULT_MAX_LIST_RESULTS = 5000;
 const DEFAULT_LIST_CONCURRENCY = 16;
+
+function getErrnoCode(error: unknown): string | undefined {
+    if (typeof error !== 'object' || error === null) {
+        return undefined;
+    }
+
+    const code = (error as { code?: unknown }).code;
+    return typeof code === 'string' ? code : undefined;
+}
+
+function normalizeStatSize(size: number | bigint): number {
+    return typeof size === 'bigint' ? Number(size) : size;
+}
+
+function isFilesystemRuntimeError(error: unknown): error is DextoRuntimeError {
+    return error instanceof DextoRuntimeError && error.scope === 'filesystem';
+}
 
 /**
  * FileSystemService - Handles all file system operations with security checks
@@ -198,34 +221,34 @@ export class FileSystemService {
         return validation.normalizedPath;
     }
 
-    private async readNormalizedFile(
-        normalizedPath: string,
-        options: ReadFileOptions = {}
-    ): Promise<FileContent> {
-        // Check if file exists
+    private async ensureReadableFile(
+        normalizedPath: string
+    ): Promise<Awaited<ReturnType<typeof fs.stat>>> {
         try {
             const stats = await fs.stat(normalizedPath);
+            const fileSize = normalizeStatSize(stats.size);
 
             if (!stats.isFile()) {
                 throw FileSystemError.invalidPath(normalizedPath, 'Path is not a file');
             }
 
-            // Check file size
-            if (stats.size > this.config.maxFileSize) {
+            if (fileSize > this.config.maxFileSize) {
                 throw FileSystemError.fileTooLarge(
                     normalizedPath,
-                    stats.size,
+                    fileSize,
                     this.config.maxFileSize
                 );
             }
+
+            return stats;
         } catch (error) {
-            if (error instanceof DextoRuntimeError && error.scope === 'filesystem') {
+            if (isFilesystemRuntimeError(error)) {
                 throw error;
             }
-            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            if (getErrnoCode(error) === 'ENOENT') {
                 throw FileSystemError.fileNotFound(normalizedPath);
             }
-            if ((error as NodeJS.ErrnoException).code === 'EACCES') {
+            if (getErrnoCode(error) === 'EACCES') {
                 throw FileSystemError.permissionDenied(normalizedPath, 'read');
             }
             if (error instanceof DextoRuntimeError) {
@@ -236,13 +259,25 @@ export class FileSystemService {
                 error instanceof Error ? error.message : String(error)
             );
         }
+    }
 
-        // Read file
+    private async readNormalizedFile(
+        normalizedPath: string,
+        options: ReadFileOptions = {}
+    ): Promise<FileContent> {
+        const stats = await this.ensureReadableFile(normalizedPath);
+
         try {
             const encoding = options.encoding || DEFAULT_ENCODING;
-            const rawContent = await fs.readFile(normalizedPath);
-            const mimeType = detectMimeType(normalizedPath, rawContent);
-            const binaryLike = isLikelyBinary(rawContent);
+            const probeSize = Math.min(normalizeStatSize(stats.size), 8192);
+            const handle = await fs.open(normalizedPath, 'r');
+            const probe = Buffer.alloc(probeSize);
+            const { bytesRead } = await handle.read(probe, 0, probeSize, 0);
+            await handle.close();
+
+            const sample = probe.subarray(0, bytesRead);
+            const mimeType = detectMimeType(normalizedPath, sample);
+            const binaryLike = isLikelyBinary(sample);
             const canReadAsText =
                 !binaryLike && (isTextMimeType(mimeType) || mimeType === 'image/svg+xml');
 
@@ -253,23 +288,39 @@ export class FileSystemService {
                 );
             }
 
-            const content = rawContent.toString(encoding);
-            const lines = content.split('\n');
-
-            // Handle offset (1-based per types) and limit
             const limit = options.limit;
-            const offset1 = options.offset; // 1-based if provided
+            const startLine = options.offset && options.offset > 0 ? options.offset : 1;
 
-            let selectedLines: string[];
+            const stream = createReadStream(normalizedPath, {
+                encoding,
+            });
+            const rl = createInterface({
+                input: stream,
+                crlfDelay: Infinity,
+            });
+
+            const selectedLines: string[] = [];
+            let lineNumber = 0;
             let truncated = false;
 
-            if ((offset1 && offset1 > 0) || limit !== undefined) {
-                const start = offset1 && offset1 > 0 ? Math.max(0, offset1 - 1) : 0;
-                const end = limit !== undefined ? start + limit : lines.length;
-                selectedLines = lines.slice(start, end);
-                truncated = end < lines.length;
-            } else {
-                selectedLines = lines;
+            try {
+                for await (const line of rl) {
+                    lineNumber += 1;
+
+                    if (lineNumber < startLine) {
+                        continue;
+                    }
+
+                    if (limit !== undefined && selectedLines.length >= limit) {
+                        truncated = true;
+                        break;
+                    }
+
+                    selectedLines.push(line);
+                }
+            } finally {
+                rl.close();
+                stream.destroy();
             }
 
             const returnedContent = selectedLines.join('\n');
@@ -280,9 +331,11 @@ export class FileSystemService {
                 mimeType,
                 truncated,
                 size: Buffer.byteLength(returnedContent, encoding),
+                startLine,
+                nextOffset: truncated ? startLine + selectedLines.length : undefined,
             };
         } catch (error) {
-            if (error instanceof DextoRuntimeError && error.scope === 'filesystem') {
+            if (isFilesystemRuntimeError(error)) {
                 throw error;
             }
             throw FileSystemError.readFailed(
@@ -312,15 +365,16 @@ export class FileSystemService {
 
         try {
             const stats = await fs.stat(normalizedPath);
+            const fileSize = normalizeStatSize(stats.size);
 
             if (!stats.isFile()) {
                 throw FileSystemError.invalidPath(normalizedPath, 'Path is not a file');
             }
 
-            if (stats.size > this.config.maxFileSize) {
+            if (fileSize > this.config.maxFileSize) {
                 throw FileSystemError.fileTooLarge(
                     normalizedPath,
-                    stats.size,
+                    fileSize,
                     this.config.maxFileSize
                 );
             }
@@ -340,16 +394,16 @@ export class FileSystemService {
                 mimeType,
                 filename: path.basename(normalizedPath),
                 kind: getMediaFileKind(mimeType),
-                size: stats.size,
+                size: fileSize,
             };
         } catch (error) {
-            if (error instanceof DextoRuntimeError && error.scope === 'filesystem') {
+            if (isFilesystemRuntimeError(error)) {
                 throw error;
             }
-            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            if (getErrnoCode(error) === 'ENOENT') {
                 throw FileSystemError.fileNotFound(normalizedPath);
             }
-            if ((error as NodeJS.ErrnoException).code === 'EACCES') {
+            if (getErrnoCode(error) === 'EACCES') {
                 throw FileSystemError.permissionDenied(normalizedPath, 'read');
             }
             throw FileSystemError.readFailed(
@@ -384,61 +438,41 @@ export class FileSystemService {
 
         const cwd: string = options.cwd || this.config.workingDirectory || process.cwd();
         const maxResults = options.maxResults || DEFAULT_MAX_RESULTS;
+        const includeMetadata = options.includeMetadata !== false;
 
         try {
-            // Execute glob search
+            const ripgrepResult = await ripgrepFiles({
+                cwd,
+                globs: [pattern],
+                maxResults,
+            });
+            if (ripgrepResult) {
+                const files = await this.collectValidatedFileMetadata(
+                    ripgrepResult.paths,
+                    includeMetadata
+                );
+                return {
+                    files,
+                    truncated: ripgrepResult.truncated,
+                    totalFound: files.length,
+                };
+            }
+
             const files = await glob(pattern, {
                 cwd,
                 absolute: true,
-                nodir: true, // Only files
-                follow: false, // Don't follow symlinks
+                nodir: true,
+                follow: false,
             });
 
-            // Validate each path and collect metadata
-            const validFiles: FileMetadata[] = [];
-
-            for (const file of files) {
-                // Validate path (async for non-blocking symlink resolution)
-                const validation = await this.pathValidator.validatePath(file);
-                if (!validation.isValid || !validation.normalizedPath) {
-                    this.logger.debug(`Skipping invalid path: ${file}`);
-                    continue;
-                }
-
-                // Get metadata if requested
-                if (options.includeMetadata !== false) {
-                    try {
-                        const stats = await fs.stat(validation.normalizedPath);
-                        validFiles.push({
-                            path: validation.normalizedPath,
-                            size: stats.size,
-                            modified: stats.mtime,
-                            isDirectory: stats.isDirectory(),
-                        });
-                    } catch (error) {
-                        this.logger.debug(
-                            `Failed to stat file ${file}: ${error instanceof Error ? error.message : String(error)}`
-                        );
-                    }
-                } else {
-                    validFiles.push({
-                        path: validation.normalizedPath,
-                        size: 0,
-                        modified: new Date(),
-                        isDirectory: false,
-                    });
-                }
-
-                // Check if we've reached the limit
-                if (validFiles.length >= maxResults) {
-                    break;
-                }
-            }
-
-            const limited = validFiles.length >= maxResults;
+            const limitedFiles = files.slice(0, maxResults);
+            const validFiles = await this.collectValidatedFileMetadata(
+                limitedFiles,
+                includeMetadata
+            );
             return {
                 files: validFiles,
-                truncated: limited,
+                truncated: files.length > maxResults,
                 totalFound: validFiles.length,
             };
         } catch (error) {
@@ -447,6 +481,222 @@ export class FileSystemService {
                 error instanceof Error ? error.message : String(error)
             );
         }
+    }
+
+    private async collectValidatedFileMetadata(
+        filePaths: string[],
+        includeMetadata: boolean
+    ): Promise<FileMetadata[]> {
+        const entries = await this.mapWithConcurrency(
+            filePaths,
+            DEFAULT_LIST_CONCURRENCY,
+            async (filePath) => {
+                const validation = await this.pathValidator.validatePath(filePath);
+                if (!validation.isValid || !validation.normalizedPath) {
+                    this.logger.debug(`Skipping invalid path: ${filePath}`);
+                    return null;
+                }
+
+                if (!includeMetadata) {
+                    return {
+                        path: validation.normalizedPath,
+                        size: 0,
+                        modified: new Date(0),
+                        isDirectory: false,
+                    } satisfies FileMetadata;
+                }
+
+                try {
+                    const stats = await fs.stat(validation.normalizedPath);
+                    if (!stats.isFile()) {
+                        return null;
+                    }
+
+                    return {
+                        path: validation.normalizedPath,
+                        size: normalizeStatSize(stats.size),
+                        modified: stats.mtime,
+                        isDirectory: false,
+                    } satisfies FileMetadata;
+                } catch (error) {
+                    this.logger.debug(
+                        `Failed to stat file ${filePath}: ${error instanceof Error ? error.message : String(error)}`
+                    );
+                    return null;
+                }
+            }
+        );
+
+        return entries.filter(Boolean) as FileMetadata[];
+    }
+
+    private subsequenceScore(query: string, candidate: string): number | null {
+        let score = 0;
+        let queryIndex = 0;
+        let lastMatch = -1;
+
+        for (let candidateIndex = 0; candidateIndex < candidate.length; candidateIndex += 1) {
+            if (candidate[candidateIndex] !== query[queryIndex]) {
+                continue;
+            }
+
+            score += lastMatch >= 0 ? Math.max(1, 12 - (candidateIndex - lastMatch)) : 12;
+            lastMatch = candidateIndex;
+            queryIndex += 1;
+
+            if (queryIndex === query.length) {
+                return score - candidate.length;
+            }
+        }
+
+        return null;
+    }
+
+    private scorePathQuery(query: string, candidatePath: string): number | null {
+        const normalizedQuery = query.trim().toLowerCase();
+        if (!normalizedQuery) {
+            return null;
+        }
+
+        const normalizedPath = candidatePath.toLowerCase();
+        const baseName = path.basename(candidatePath).toLowerCase();
+        const baseNameStem = path.parse(baseName).name.toLowerCase();
+        const compactQuery = normalizedQuery.replace(/[\s._/-]+/g, '');
+        const compactPath = normalizedPath.replace(/[\s._/-]+/g, '');
+        const compactBaseName = baseNameStem.replace(/[\s._/-]+/g, '');
+
+        if (baseName === normalizedQuery) {
+            return 1200 - candidatePath.length;
+        }
+        if (normalizedPath === normalizedQuery) {
+            return 1100 - candidatePath.length;
+        }
+        if (baseName.startsWith(normalizedQuery)) {
+            return 1000 - baseName.length;
+        }
+        if (compactQuery && compactBaseName === compactQuery) {
+            return 980 - baseNameStem.length;
+        }
+        if (compactQuery && compactBaseName.startsWith(compactQuery)) {
+            return 940 - compactBaseName.length;
+        }
+
+        const baseIndex = baseName.indexOf(normalizedQuery);
+        if (baseIndex >= 0) {
+            return 900 - baseIndex * 10 - baseName.length;
+        }
+        const compactBaseIndex = compactBaseName.indexOf(compactQuery);
+        if (compactQuery && compactBaseIndex >= 0) {
+            return 860 - compactBaseIndex * 10 - compactBaseName.length;
+        }
+
+        const pathIndex = normalizedPath.indexOf(normalizedQuery);
+        if (pathIndex >= 0) {
+            return 800 - pathIndex * 2 - normalizedPath.length;
+        }
+        const compactPathIndex = compactPath.indexOf(compactQuery);
+        if (compactQuery && compactPathIndex >= 0) {
+            return 760 - compactPathIndex * 2 - compactPath.length;
+        }
+
+        const baseScore = this.subsequenceScore(compactQuery || normalizedQuery, compactBaseName);
+        if (baseScore !== null) {
+            return 700 + baseScore;
+        }
+
+        const pathScore = this.subsequenceScore(compactQuery || normalizedQuery, compactPath);
+        if (pathScore !== null) {
+            return 500 + pathScore;
+        }
+
+        return null;
+    }
+
+    async findPaths(query: string, options: FindPathsOptions = {}): Promise<FindPathsResult> {
+        await this.ensureInitialized();
+
+        const basePath: string = options.path || this.config.workingDirectory || process.cwd();
+        const validation = await this.pathValidator.validatePath(basePath);
+        if (!validation.isValid || !validation.normalizedPath) {
+            throw FileSystemError.invalidPath(basePath, validation.error || 'Unknown error');
+        }
+
+        const searchPath = validation.normalizedPath;
+        const maxResults = options.maxResults ?? DEFAULT_MAX_RESULTS;
+        const pathType = options.pathType ?? 'all';
+
+        let filePaths: string[];
+        const ripgrepResult = await ripgrepFiles({ cwd: searchPath });
+        if (ripgrepResult) {
+            filePaths = ripgrepResult.paths;
+        } else {
+            const files = await glob('**/*', {
+                cwd: searchPath,
+                absolute: true,
+                nodir: true,
+                follow: false,
+            });
+            filePaths = files;
+        }
+
+        const inventory = new Map<string, 'file' | 'directory'>();
+        for (const filePath of filePaths) {
+            const validationResult = await this.pathValidator.validatePath(filePath);
+            if (!validationResult.isValid || !validationResult.normalizedPath) {
+                continue;
+            }
+
+            inventory.set(validationResult.normalizedPath, 'file');
+
+            let currentDir = path.dirname(validationResult.normalizedPath);
+            while (currentDir !== searchPath && currentDir.startsWith(searchPath + path.sep)) {
+                if (this.pathValidator.isPathAllowedQuick(currentDir)) {
+                    inventory.set(currentDir, 'directory');
+                }
+                const parent = path.dirname(currentDir);
+                if (parent === currentDir) {
+                    break;
+                }
+                currentDir = parent;
+            }
+        }
+
+        const scoredMatches: PathMatch[] = [];
+        for (const [candidatePath, candidateType] of inventory) {
+            if (pathType !== 'all' && candidateType !== pathType) {
+                continue;
+            }
+
+            const relativePath =
+                path.relative(searchPath, candidatePath) || path.basename(candidatePath);
+            const score = this.scorePathQuery(query, relativePath);
+            if (score === null) {
+                continue;
+            }
+
+            scoredMatches.push({
+                path: candidatePath,
+                pathType: candidateType,
+                score,
+            });
+        }
+
+        scoredMatches.sort((left, right) => {
+            if (right.score !== left.score) {
+                return right.score - left.score;
+            }
+            if (left.path.length !== right.path.length) {
+                return left.path.length - right.path.length;
+            }
+            return left.path.localeCompare(right.path);
+        });
+
+        return {
+            matches: scoredMatches.slice(0, maxResults),
+            totalMatches: scoredMatches.length,
+            truncated: scoredMatches.length > maxResults,
+            searchPath,
+        };
     }
 
     /**
@@ -471,13 +721,13 @@ export class FileSystemService {
                 throw FileSystemError.invalidPath(normalizedPath, 'Path is not a directory');
             }
         } catch (error) {
-            if (error instanceof DextoRuntimeError && error.scope === 'filesystem') {
+            if (isFilesystemRuntimeError(error)) {
                 throw error;
             }
-            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            if (getErrnoCode(error) === 'ENOENT') {
                 throw FileSystemError.directoryNotFound(normalizedPath);
             }
-            if ((error as NodeJS.ErrnoException).code === 'EACCES') {
+            if (getErrnoCode(error) === 'EACCES') {
                 throw FileSystemError.permissionDenied(normalizedPath, 'read');
             }
             throw FileSystemError.listFailed(
@@ -555,7 +805,7 @@ export class FileSystemService {
                             name: entry.entry.name,
                             path: entry.normalizedPath,
                             isDirectory: entry.entry.isDirectory(),
-                            size: stat.size,
+                            size: normalizeStatSize(stat.size),
                             modified: stat.mtime,
                         } satisfies DirectoryEntry;
                     } catch {
@@ -659,7 +909,7 @@ export class FileSystemService {
             const created = recursive ? typeof firstCreated === 'string' : true;
             return { path: normalizedPath, created };
         } catch (error) {
-            const code = (error as NodeJS.ErrnoException).code;
+            const code = getErrnoCode(error);
             if (code === 'EEXIST') {
                 try {
                     const stat = await fs.stat(normalizedPath);
@@ -700,7 +950,7 @@ export class FileSystemService {
             await fs.rm(normalizedPath, { recursive: options.recursive ?? false, force: false });
             return { path: normalizedPath, deleted: true };
         } catch (error) {
-            const code = (error as NodeJS.ErrnoException).code;
+            const code = getErrnoCode(error);
             if (code === 'ENOENT') {
                 throw FileSystemError.fileNotFound(normalizedPath);
             }
@@ -744,7 +994,7 @@ export class FileSystemService {
                 `Target already exists: ${normalizedTo}`
             );
         } catch (error) {
-            const code = (error as NodeJS.ErrnoException).code;
+            const code = getErrnoCode(error);
             if (!code) {
                 throw error;
             }
@@ -764,7 +1014,7 @@ export class FileSystemService {
             await fs.rename(normalizedFrom, normalizedTo);
             return { from: normalizedFrom, to: normalizedTo };
         } catch (error) {
-            const code = (error as NodeJS.ErrnoException).code;
+            const code = getErrnoCode(error);
             if (code === 'ENOENT') {
                 throw FileSystemError.fileNotFound(normalizedFrom);
             }
@@ -786,7 +1036,8 @@ export class FileSystemService {
 
         const basePath: string = options.path || this.config.workingDirectory || process.cwd();
         let searchPath: string;
-        let globPattern: string;
+        let globPattern: string | undefined;
+        let targetPath: string | undefined;
 
         const baseValidation = await this.pathValidator.validatePath(basePath);
         if (!baseValidation.isValid || !baseValidation.normalizedPath) {
@@ -799,38 +1050,87 @@ export class FileSystemService {
             const stats = await fs.stat(resolvedPath);
 
             if (stats.isFile()) {
-                // If path is a file, extract directory and use filename in glob pattern
                 searchPath = path.dirname(resolvedPath);
-                const fileName = path.basename(resolvedPath);
-                // Escape special glob characters in filename
-                const escapedFileName = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                globPattern = options.glob || escapedFileName;
+                targetPath = path.basename(resolvedPath);
+                globPattern = targetPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             } else {
-                // If path is a directory, use it as-is
                 searchPath = resolvedPath;
                 globPattern = options.glob || '**/*';
             }
         } catch {
-            // If stat fails, assume it's a directory (for backwards compatibility)
             searchPath = resolvedPath;
             globPattern = options.glob || '**/*';
         }
 
         const maxResults = options.maxResults || DEFAULT_MAX_SEARCH_RESULTS;
         const contextLines = options.contextLines || 0;
+        const literal = options.literal !== false;
 
         try {
-            // Validate regex pattern for ReDoS safety before creating RegExp
-            // See: https://owasp.org/www-community/attacks/Regular_expression_Denial_of_Service_-_ReDoS
-            if (!safeRegex(pattern)) {
+            const ripgrepOptions: Parameters<typeof ripgrepSearch>[0] = {
+                cwd: searchPath,
+                pattern,
+                literal,
+                maxResults,
+            };
+            if (typeof options.caseInsensitive === 'boolean') {
+                ripgrepOptions.caseInsensitive = options.caseInsensitive;
+            }
+            if (targetPath) {
+                ripgrepOptions.targetPath = targetPath;
+            } else if (options.glob) {
+                ripgrepOptions.globs = [options.glob];
+            }
+
+            const ripgrepResult = await ripgrepSearch(ripgrepOptions);
+            if (ripgrepResult) {
+                const matches = await this.mapWithConcurrency(
+                    ripgrepResult.matches,
+                    Math.min(DEFAULT_LIST_CONCURRENCY, Math.max(1, ripgrepResult.matches.length)),
+                    async (match) => {
+                        const validation = await this.pathValidator.validatePath(match.file);
+                        if (!validation.isValid || !validation.normalizedPath) {
+                            return null;
+                        }
+
+                        let context: { before: string[]; after: string[] } | undefined;
+                        if (contextLines > 0) {
+                            context = await this.readContextWindow(
+                                validation.normalizedPath,
+                                match.lineNumber,
+                                contextLines
+                            );
+                        }
+
+                        return {
+                            file: validation.normalizedPath,
+                            lineNumber: match.lineNumber,
+                            line: match.line,
+                            ...(context ? { context } : {}),
+                        } satisfies SearchMatch;
+                    }
+                );
+
+                const filteredMatches = matches.filter(Boolean) as SearchMatch[];
+                return {
+                    matches: filteredMatches,
+                    totalMatches: filteredMatches.length,
+                    truncated: ripgrepResult.truncated,
+                    filesSearched: ripgrepResult.filesSearched,
+                };
+            }
+
+            const flags = options.caseInsensitive ? 'i' : '';
+            const regexPattern = literal ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : pattern;
+
+            if (!literal && !safeRegex(regexPattern)) {
                 throw FileSystemError.invalidPattern(
                     pattern,
                     'Pattern may cause catastrophic backtracking (ReDoS). Please simplify the regex.'
                 );
             }
 
-            const flags = options.caseInsensitive ? 'i' : '';
-            const regex = new RegExp(pattern, flags);
+            const regex = new RegExp(regexPattern, flags);
 
             // Find files to search
             const globResult = await this.globFiles(globPattern, {
@@ -916,6 +1216,49 @@ export class FileSystemService {
                 error instanceof Error ? error.message : String(error)
             );
         }
+    }
+
+    private async readContextWindow(
+        normalizedPath: string,
+        lineNumber: number,
+        contextLines: number
+    ): Promise<{ before: string[]; after: string[] }> {
+        const before: string[] = [];
+        const after: string[] = [];
+
+        const startLine = Math.max(1, lineNumber - contextLines);
+        const endLine = lineNumber + contextLines;
+
+        const stream = createReadStream(normalizedPath, {
+            encoding: DEFAULT_ENCODING,
+        });
+        const rl = createInterface({
+            input: stream,
+            crlfDelay: Infinity,
+        });
+
+        let currentLine = 0;
+        try {
+            for await (const line of rl) {
+                currentLine += 1;
+                if (currentLine < startLine) {
+                    continue;
+                }
+                if (currentLine > endLine) {
+                    break;
+                }
+                if (currentLine < lineNumber) {
+                    before.push(line);
+                } else if (currentLine > lineNumber) {
+                    after.push(line);
+                }
+            }
+        } finally {
+            rl.close();
+            stream.destroy();
+        }
+
+        return { before, after };
     }
 
     /**

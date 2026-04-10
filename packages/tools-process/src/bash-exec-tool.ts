@@ -57,7 +57,8 @@ export function createBashExecTool(
         description: `Execute a shell command in the project root directory.
 
 IMPORTANT: This tool is for terminal operations like git, npm, docker, etc. Do NOT use it for file operations - use the specialized tools instead:
-- File search: Use glob_files (NOT find or ls)
+- Directory listing: Use list_directory (NOT ls)
+- Path discovery: Use find_paths or glob_files (NOT find)
 - Content search: Use grep_content (NOT grep or rg)
 - Read files: Use read_file (NOT cat/head/tail)
 - Edit files: Use edit_file (NOT sed/awk)
