@@ -64,11 +64,13 @@ IMPORTANT: This tool is for terminal operations like git, npm, docker, etc. Do N
 - Edit files: Use edit_file (NOT sed/awk)
 - Write files: Use write_file (NOT echo/cat with heredoc)
 
+These are strong defaults because the specialized tools return structured, validated results and lead to higher success rates for repo exploration. Only use shell equivalents when shell behavior itself is required for the task.
+
 Before executing the command, follow these steps:
 
 1. Directory Verification:
-   - If the command will create new directories or files, first use ls to verify the parent directory exists and is the correct location
-   - For example, before running "mkdir foo/bar", first use ls foo to check that "foo" exists
+   - If the command will create new directories or files, first use list_directory to verify the parent directory exists and is the correct location
+   - For example, before running "mkdir foo/bar", first use list_directory on "foo" to check that "foo" exists
 
 2. Command Execution:
    - Always quote file paths that contain spaces with double quotes
