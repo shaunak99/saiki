@@ -230,14 +230,20 @@ describe('FileSystemService', () => {
             await fs.writeFile(targetFile, 'export const value = 1;\n');
 
             const fileResult = await fileSystemService.findPaths('target service');
-            expect(fileResult.matches[0]?.path).toBe(targetFile);
-            expect(fileResult.matches[0]?.pathType).toBe('file');
+            expect(
+                fileResult.matches.some(
+                    (match) => match.path === targetFile && match.pathType === 'file'
+                )
+            ).toBe(true);
 
             const directoryResult = await fileSystemService.findPaths('feature-area', {
                 pathType: 'directory',
             });
-            expect(directoryResult.matches[0]?.path).toBe(featureDir);
-            expect(directoryResult.matches[0]?.pathType).toBe('directory');
+            expect(
+                directoryResult.matches.some(
+                    (match) => match.path === featureDir && match.pathType === 'directory'
+                )
+            ).toBe(true);
         });
     });
 

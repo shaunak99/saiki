@@ -7,7 +7,7 @@ import { createDirectoryAccessApprovalHandlers } from './directory-approval.js';
 
 const FindPathsInputSchema = z
     .object({
-        query: z.string().min(1).describe('Filename or path fragment to search for'),
+        query: z.string().trim().min(1).describe('Filename or path fragment to search for'),
         path: z
             .string()
             .optional()

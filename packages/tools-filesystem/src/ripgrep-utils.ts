@@ -177,6 +177,8 @@ export async function ripgrepSearch(options: {
     }
     if (options.literal) {
         args.push('-F');
+    } else {
+        args.push('-P');
     }
     for (const glob of options.globs ?? []) {
         args.push(`--glob=${glob}`);
@@ -186,46 +188,59 @@ export async function ripgrepSearch(options: {
         args.push(options.targetPath);
     }
 
-    const result = await runRipgrepLines(args, {
-        cwd: options.cwd,
-        onLine: (line) => {
-            let event: RipgrepJsonEvent;
-            try {
-                event = JSON.parse(line) as RipgrepJsonEvent;
-            } catch {
-                return true;
-            }
-
-            if (event.type === 'begin') {
-                const relativePath = event.data?.path?.text;
-                if (relativePath) {
-                    files.add(path.resolve(options.cwd, relativePath));
+    let result: RipgrepRunResult;
+    try {
+        result = await runRipgrepLines(args, {
+            cwd: options.cwd,
+            onLine: (line) => {
+                let event: RipgrepJsonEvent;
+                try {
+                    event = JSON.parse(line) as RipgrepJsonEvent;
+                } catch {
+                    return true;
                 }
-                return true;
-            }
 
-            if (event.type !== 'match') {
-                return true;
-            }
+                if (event.type === 'begin') {
+                    const relativePath = event.data?.path?.text;
+                    if (relativePath) {
+                        files.add(path.resolve(options.cwd, relativePath));
+                    }
+                    return true;
+                }
 
-            const relativePath = event.data?.path?.text;
-            const lineNumber = event.data?.line_number;
-            const lineText = event.data?.lines?.text;
-            if (!relativePath || typeof lineNumber !== 'number' || typeof lineText !== 'string') {
-                return true;
-            }
+                if (event.type !== 'match') {
+                    return true;
+                }
 
-            const absolutePath = path.resolve(options.cwd, relativePath);
-            files.add(absolutePath);
-            matches.push({
-                file: absolutePath,
-                lineNumber,
-                line: lineText.replace(/\r?\n$/, ''),
-            });
+                const relativePath = event.data?.path?.text;
+                const lineNumber = event.data?.line_number;
+                const lineText = event.data?.lines?.text;
+                if (
+                    !relativePath ||
+                    typeof lineNumber !== 'number' ||
+                    typeof lineText !== 'string'
+                ) {
+                    return true;
+                }
 
-            return matches.length < limit;
-        },
-    });
+                const absolutePath = path.resolve(options.cwd, relativePath);
+                files.add(absolutePath);
+                matches.push({
+                    file: absolutePath,
+                    lineNumber,
+                    line: lineText.replace(/\r?\n$/, ''),
+                });
+
+                return matches.length < limit;
+            },
+        });
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!options.literal && /pcre2|look-around|backreferences?/i.test(message)) {
+            return null;
+        }
+        throw error;
+    }
 
     return {
         matches,

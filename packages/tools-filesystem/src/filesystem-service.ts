@@ -272,8 +272,12 @@ export class FileSystemService {
             const probeSize = Math.min(normalizeStatSize(stats.size), 8192);
             const handle = await fs.open(normalizedPath, 'r');
             const probe = Buffer.alloc(probeSize);
-            const { bytesRead } = await handle.read(probe, 0, probeSize, 0);
-            await handle.close();
+            let bytesRead = 0;
+            try {
+                ({ bytesRead } = await handle.read(probe, 0, probeSize, 0));
+            } finally {
+                await handle.close();
+            }
 
             const sample = probe.subarray(0, bytesRead);
             const mimeType = detectMimeType(normalizedPath, sample);
@@ -438,7 +442,7 @@ export class FileSystemService {
 
         const cwd: string = options.cwd || this.config.workingDirectory || process.cwd();
         const maxResults = options.maxResults || DEFAULT_MAX_RESULTS;
-        const includeMetadata = options.includeMetadata !== false;
+        const includeMetadata = options.includeMetadata === true;
 
         try {
             const ripgrepResult = await ripgrepFiles({
@@ -1095,11 +1099,15 @@ export class FileSystemService {
 
                         let context: { before: string[]; after: string[] } | undefined;
                         if (contextLines > 0) {
-                            context = await this.readContextWindow(
-                                validation.normalizedPath,
-                                match.lineNumber,
-                                contextLines
-                            );
+                            try {
+                                context = await this.readContextWindow(
+                                    validation.normalizedPath,
+                                    match.lineNumber,
+                                    contextLines
+                                );
+                            } catch {
+                                return null;
+                            }
                         }
 
                         return {
