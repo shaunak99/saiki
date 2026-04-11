@@ -43,7 +43,12 @@ import {
 import { PathValidator } from './path-validator.js';
 import { FileSystemError } from './errors.js';
 import { detectMimeType, getMediaFileKind, isLikelyBinary, isTextMimeType } from './mime-utils.js';
-import { ripgrepFiles, ripgrepSearch } from './ripgrep-utils.js';
+import {
+    isRipgrepAvailable,
+    ripgrepFiles,
+    ripgrepSearch,
+    ripgrepWalkFiles,
+} from './ripgrep-utils.js';
 
 const DEFAULT_ENCODING: BufferEncoding = 'utf-8';
 const DEFAULT_MAX_RESULTS = 1000;
@@ -66,6 +71,19 @@ function normalizeStatSize(size: number | bigint): number {
 
 function isFilesystemRuntimeError(error: unknown): error is DextoRuntimeError {
     return error instanceof DextoRuntimeError && error.scope === 'filesystem';
+}
+
+function countTextLines(content: string): number {
+    if (content.length === 0) {
+        return 0;
+    }
+
+    const lineBreaks = content.match(/\r\n|\n|\r/g);
+    if (!lineBreaks) {
+        return 1;
+    }
+
+    return /(?:\r\n|\n|\r)$/.test(content) ? lineBreaks.length : lineBreaks.length + 1;
 }
 
 /**
@@ -294,6 +312,19 @@ export class FileSystemService {
 
             const limit = options.limit;
             const startLine = options.offset && options.offset > 0 ? options.offset : 1;
+            if (startLine === 1 && limit === undefined) {
+                const fullContent = await fs.readFile(normalizedPath, encoding);
+                return {
+                    content: fullContent,
+                    lines: countTextLines(fullContent),
+                    encoding,
+                    mimeType,
+                    truncated: false,
+                    size: Buffer.byteLength(fullContent, encoding),
+                    startLine,
+                    nextOffset: undefined,
+                };
+            }
 
             const stream = createReadStream(normalizedPath, {
                 encoding,
@@ -628,59 +659,75 @@ export class FileSystemService {
         const searchPath = validation.normalizedPath;
         const maxResults = options.maxResults ?? DEFAULT_MAX_RESULTS;
         const pathType = options.pathType ?? 'all';
-        const candidateCap = Math.max(maxResults * 20, 5000);
 
-        let filePaths: string[];
-        const ripgrepResult = await ripgrepFiles({
-            cwd: searchPath,
-            maxResults: candidateCap,
-        });
-        if (ripgrepResult) {
-            filePaths = ripgrepResult.paths;
-        } else {
-            filePaths = [];
-            const pendingDirectories = [searchPath];
+        const ripgrepAvailable = await isRipgrepAvailable();
+        const seenCandidates = new Set<string>();
+        const scoredMatches: PathMatch[] = [];
+        let totalMatches = 0;
 
-            while (pendingDirectories.length > 0 && filePaths.length < candidateCap) {
-                const currentDirectory = pendingDirectories.pop();
-                if (!currentDirectory) {
-                    continue;
-                }
-
-                let entries;
-                try {
-                    entries = await fs.readdir(currentDirectory, { withFileTypes: true });
-                } catch {
-                    continue;
-                }
-
-                for (const entry of entries) {
-                    const entryPath = path.join(currentDirectory, entry.name);
-                    if (!this.pathValidator.isPathAllowedQuick(entryPath)) {
-                        continue;
-                    }
-
-                    if (entry.isDirectory()) {
-                        pendingDirectories.push(entryPath);
-                        continue;
-                    }
-
-                    if (!entry.isFile()) {
-                        continue;
-                    }
-
-                    filePaths.push(entryPath);
-                    if (filePaths.length >= candidateCap) {
-                        break;
-                    }
-                }
+        const sortMatches = (left: PathMatch, right: PathMatch): number => {
+            if (right.score !== left.score) {
+                return right.score - left.score;
             }
-        }
+            if (left.path.length !== right.path.length) {
+                return left.path.length - right.path.length;
+            }
+            return left.path.localeCompare(right.path);
+        };
 
-        const inventory = new Map<string, 'file' | 'directory'>();
+        const considerCandidate = (
+            candidatePath: string,
+            candidateType: 'file' | 'directory'
+        ): void => {
+            if (pathType !== 'all' && candidateType !== pathType) {
+                return;
+            }
+
+            const relativePath =
+                path.relative(searchPath, candidatePath) || path.basename(candidatePath);
+            const score = this.scorePathQuery(query, relativePath);
+            if (score === null) {
+                return;
+            }
+
+            totalMatches += 1;
+            scoredMatches.push({
+                path: candidatePath,
+                pathType: candidateType,
+                score,
+            });
+            scoredMatches.sort(sortMatches);
+            if (scoredMatches.length > maxResults) {
+                scoredMatches.pop();
+            }
+        };
+
+        const registerCandidate = async (
+            candidatePath: string,
+            candidateType: 'file' | 'directory'
+        ): Promise<void> => {
+            if (!this.pathValidator.isPathAllowedQuick(candidatePath)) {
+                return;
+            }
+
+            const validationResult = await this.pathValidator.validatePath(candidatePath);
+            if (!validationResult.isValid || !validationResult.normalizedPath) {
+                return;
+            }
+
+            const key = `${candidateType}:${validationResult.normalizedPath}`;
+            if (seenCandidates.has(key)) {
+                return;
+            }
+            seenCandidates.add(key);
+
+            considerCandidate(validationResult.normalizedPath, candidateType);
+        };
+
+        await registerCandidate(searchPath, 'directory');
         const pendingDirectories = [searchPath];
 
-        while (pendingDirectories.length > 0 && inventory.size < candidateCap) {
+        while (pendingDirectories.length > 0) {
             const currentDirectory = pendingDirectories.pop();
             if (!currentDirectory) {
                 continue;
@@ -694,86 +741,39 @@ export class FileSystemService {
             }
 
             for (const entry of entries) {
-                if (!entry.isDirectory()) {
+                const entryPath = path.join(currentDirectory, entry.name);
+                if (!this.pathValidator.isPathAllowedQuick(entryPath)) {
                     continue;
                 }
 
-                const directoryPath = path.join(currentDirectory, entry.name);
-                if (!this.pathValidator.isPathAllowedQuick(directoryPath)) {
+                if (entry.isDirectory()) {
+                    await registerCandidate(entryPath, 'directory');
+                    pendingDirectories.push(entryPath);
                     continue;
                 }
 
-                const directoryValidation = await this.pathValidator.validatePath(directoryPath);
-                if (!directoryValidation.isValid || !directoryValidation.normalizedPath) {
+                if (ripgrepAvailable || !entry.isFile()) {
                     continue;
                 }
 
-                inventory.set(directoryValidation.normalizedPath, 'directory');
-                if (inventory.size >= candidateCap) {
-                    break;
-                }
-                pendingDirectories.push(directoryValidation.normalizedPath);
+                await registerCandidate(entryPath, 'file');
             }
         }
 
-        for (const filePath of filePaths) {
-            if (inventory.size >= candidateCap) {
-                break;
-            }
-            const validationResult = await this.pathValidator.validatePath(filePath);
-            if (!validationResult.isValid || !validationResult.normalizedPath) {
-                continue;
-            }
-
-            inventory.set(validationResult.normalizedPath, 'file');
-
-            let currentDir = path.dirname(validationResult.normalizedPath);
-            while (currentDir !== searchPath && currentDir.startsWith(searchPath + path.sep)) {
-                if (this.pathValidator.isPathAllowedQuick(currentDir)) {
-                    inventory.set(currentDir, 'directory');
-                }
-                const parent = path.dirname(currentDir);
-                if (parent === currentDir) {
-                    break;
-                }
-                currentDir = parent;
-            }
-        }
-
-        const scoredMatches: PathMatch[] = [];
-        for (const [candidatePath, candidateType] of inventory) {
-            if (pathType !== 'all' && candidateType !== pathType) {
-                continue;
-            }
-
-            const relativePath =
-                path.relative(searchPath, candidatePath) || path.basename(candidatePath);
-            const score = this.scorePathQuery(query, relativePath);
-            if (score === null) {
-                continue;
-            }
-
-            scoredMatches.push({
-                path: candidatePath,
-                pathType: candidateType,
-                score,
+        if (ripgrepAvailable) {
+            await ripgrepWalkFiles({
+                cwd: searchPath,
+                onPath: async (filePath) => {
+                    await registerCandidate(filePath, 'file');
+                    return true;
+                },
             });
         }
 
-        scoredMatches.sort((left, right) => {
-            if (right.score !== left.score) {
-                return right.score - left.score;
-            }
-            if (left.path.length !== right.path.length) {
-                return left.path.length - right.path.length;
-            }
-            return left.path.localeCompare(right.path);
-        });
-
         return {
-            matches: scoredMatches.slice(0, maxResults),
-            totalMatches: scoredMatches.length,
-            truncated: scoredMatches.length > maxResults,
+            matches: scoredMatches,
+            totalMatches,
+            truncated: totalMatches > maxResults,
             searchPath,
         };
     }

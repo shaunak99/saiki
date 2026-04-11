@@ -206,6 +206,31 @@ describe('FileSystemService', () => {
             expect(result.startLine).toBe(2);
             expect(result.nextOffset).toBe(4);
         });
+
+        it('preserves CRLF and trailing newline for full-file reads', async () => {
+            const fileSystemService = new FileSystemService(
+                {
+                    allowedPaths: [tempDir],
+                    blockedPaths: [],
+                    blockedExtensions: [],
+                    maxFileSize: 10 * 1024 * 1024,
+                    workingDirectory: tempDir,
+                    enableBackups: false,
+                    backupRetentionDays: 7,
+                },
+                mockLogger
+            );
+            await fileSystemService.initialize();
+
+            const testFile = path.join(tempDir, 'crlf.txt');
+            await fs.writeFile(testFile, 'a\r\nb\r\n', 'utf-8');
+
+            const result = await fileSystemService.readFile(testFile);
+
+            expect(result.content).toBe('a\r\nb\r\n');
+            expect(result.lines).toBe(2);
+            expect(result.truncated).toBe(false);
+        });
     });
 
     describe('Path Discovery', () => {
@@ -566,6 +591,33 @@ describe('FileSystemService', () => {
 
                 expect(result.success).toBe(true);
                 expect(result.backupPath).toBeDefined();
+            });
+
+            it('preserves original line endings and final newline when editing', async () => {
+                const fileSystemService = new FileSystemService(
+                    {
+                        allowedPaths: [tempDir],
+                        blockedPaths: [],
+                        blockedExtensions: [],
+                        maxFileSize: 10 * 1024 * 1024,
+                        workingDirectory: tempDir,
+                        enableBackups: false,
+                        backupRetentionDays: 7,
+                    },
+                    mockLogger
+                );
+                await fileSystemService.initialize();
+
+                const testFile = path.join(tempDir, 'crlf-edit.txt');
+                await fs.writeFile(testFile, 'a\r\nb\r\n', 'utf-8');
+
+                await fileSystemService.editFile(testFile, {
+                    oldString: 'a',
+                    newString: 'A',
+                });
+
+                const updatedContent = await fs.readFile(testFile, 'utf-8');
+                expect(updatedContent).toBe('A\r\nb\r\n');
             });
         });
     });

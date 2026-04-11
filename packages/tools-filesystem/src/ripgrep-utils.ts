@@ -154,6 +154,30 @@ export async function ripgrepFiles(options: {
     };
 }
 
+export async function ripgrepWalkFiles(options: {
+    cwd: string;
+    globs?: string[];
+    onPath: (absolutePath: string) => boolean | Promise<boolean>;
+}): Promise<{ terminatedEarly: boolean } | null> {
+    if (!(await isRipgrepAvailable())) {
+        return null;
+    }
+
+    const args = ['--files', '--hidden', '--glob=!.git/*'];
+    for (const glob of options.globs ?? []) {
+        args.push(`--glob=${glob}`);
+    }
+
+    const result = await runRipgrepLines(args, {
+        cwd: options.cwd,
+        onLine: (line) => options.onPath(path.resolve(options.cwd, line)),
+    });
+
+    return {
+        terminatedEarly: result.terminatedEarly,
+    };
+}
+
 export async function ripgrepSearch(options: {
     cwd: string;
     pattern: string;
