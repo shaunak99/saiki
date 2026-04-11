@@ -628,25 +628,59 @@ export class FileSystemService {
         const searchPath = validation.normalizedPath;
         const maxResults = options.maxResults ?? DEFAULT_MAX_RESULTS;
         const pathType = options.pathType ?? 'all';
+        const candidateCap = Math.max(maxResults * 20, 5000);
 
         let filePaths: string[];
-        const ripgrepResult = await ripgrepFiles({ cwd: searchPath });
+        const ripgrepResult = await ripgrepFiles({
+            cwd: searchPath,
+            maxResults: candidateCap,
+        });
         if (ripgrepResult) {
             filePaths = ripgrepResult.paths;
         } else {
-            const files = await glob('**/*', {
-                cwd: searchPath,
-                absolute: true,
-                nodir: true,
-                follow: false,
-            });
-            filePaths = files;
+            filePaths = [];
+            const pendingDirectories = [searchPath];
+
+            while (pendingDirectories.length > 0 && filePaths.length < candidateCap) {
+                const currentDirectory = pendingDirectories.pop();
+                if (!currentDirectory) {
+                    continue;
+                }
+
+                let entries;
+                try {
+                    entries = await fs.readdir(currentDirectory, { withFileTypes: true });
+                } catch {
+                    continue;
+                }
+
+                for (const entry of entries) {
+                    const entryPath = path.join(currentDirectory, entry.name);
+                    if (!this.pathValidator.isPathAllowedQuick(entryPath)) {
+                        continue;
+                    }
+
+                    if (entry.isDirectory()) {
+                        pendingDirectories.push(entryPath);
+                        continue;
+                    }
+
+                    if (!entry.isFile()) {
+                        continue;
+                    }
+
+                    filePaths.push(entryPath);
+                    if (filePaths.length >= candidateCap) {
+                        break;
+                    }
+                }
+            }
         }
 
         const inventory = new Map<string, 'file' | 'directory'>();
         const pendingDirectories = [searchPath];
 
-        while (pendingDirectories.length > 0) {
+        while (pendingDirectories.length > 0 && inventory.size < candidateCap) {
             const currentDirectory = pendingDirectories.pop();
             if (!currentDirectory) {
                 continue;
@@ -675,11 +709,17 @@ export class FileSystemService {
                 }
 
                 inventory.set(directoryValidation.normalizedPath, 'directory');
+                if (inventory.size >= candidateCap) {
+                    break;
+                }
                 pendingDirectories.push(directoryValidation.normalizedPath);
             }
         }
 
         for (const filePath of filePaths) {
+            if (inventory.size >= candidateCap) {
+                break;
+            }
             const validationResult = await this.pathValidator.validatePath(filePath);
             if (!validationResult.isValid || !validationResult.normalizedPath) {
                 continue;
