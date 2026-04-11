@@ -86,6 +86,33 @@ function countTextLines(content: string): number {
     return /(?:\r\n|\n|\r)$/.test(content) ? lineBreaks.length : lineBreaks.length + 1;
 }
 
+function extractCompleteLineSegment(content: string): { segment: string; rest: string } | null {
+    for (let index = 0; index < content.length; index += 1) {
+        const char = content[index];
+        if (char === '\n') {
+            return {
+                segment: content.slice(0, index + 1),
+                rest: content.slice(index + 1),
+            };
+        }
+        if (char !== '\r') {
+            continue;
+        }
+
+        if (index + 1 >= content.length) {
+            return null;
+        }
+
+        const delimiterLength = content[index + 1] === '\n' ? 2 : 1;
+        return {
+            segment: content.slice(0, index + delimiterLength),
+            rest: content.slice(index + delimiterLength),
+        };
+    }
+
+    return null;
+}
+
 /**
  * FileSystemService - Handles all file system operations with security checks
  *
@@ -329,45 +356,69 @@ export class FileSystemService {
             const stream = createReadStream(normalizedPath, {
                 encoding,
             });
-            const rl = createInterface({
-                input: stream,
-                crlfDelay: Infinity,
-            });
-
-            const selectedLines: string[] = [];
+            const selectedParts: string[] = [];
+            let pendingContent = '';
             let lineNumber = 0;
+            let selectedLineCount = 0;
             let truncated = false;
+            let shouldStop = false;
+
+            const processLineSegment = (segment: string): void => {
+                lineNumber += 1;
+
+                if (lineNumber < startLine) {
+                    return;
+                }
+
+                if (limit !== undefined && selectedLineCount >= limit) {
+                    truncated = true;
+                    shouldStop = true;
+                    return;
+                }
+
+                selectedParts.push(segment);
+                selectedLineCount += 1;
+            };
 
             try {
-                for await (const line of rl) {
-                    lineNumber += 1;
+                for await (const chunk of stream) {
+                    pendingContent += chunk;
 
-                    if (lineNumber < startLine) {
-                        continue;
+                    while (true) {
+                        const extracted = extractCompleteLineSegment(pendingContent);
+                        if (!extracted) {
+                            break;
+                        }
+
+                        pendingContent = extracted.rest;
+                        processLineSegment(extracted.segment);
+                        if (shouldStop) {
+                            break;
+                        }
                     }
 
-                    if (limit !== undefined && selectedLines.length >= limit) {
-                        truncated = true;
+                    if (shouldStop) {
                         break;
                     }
-
-                    selectedLines.push(line);
                 }
             } finally {
-                rl.close();
                 stream.destroy();
             }
 
-            const returnedContent = selectedLines.join('\n');
+            if (!shouldStop && pendingContent.length > 0) {
+                processLineSegment(pendingContent);
+            }
+
+            const returnedContent = selectedParts.join('');
             return {
                 content: returnedContent,
-                lines: selectedLines.length,
+                lines: selectedLineCount,
                 encoding,
                 mimeType,
                 truncated,
                 size: Buffer.byteLength(returnedContent, encoding),
                 startLine,
-                nextOffset: truncated ? startLine + selectedLines.length : undefined,
+                nextOffset: truncated ? startLine + selectedLineCount : undefined,
             };
         } catch (error) {
             if (isFilesystemRuntimeError(error)) {

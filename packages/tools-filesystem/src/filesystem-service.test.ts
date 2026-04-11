@@ -200,7 +200,7 @@ describe('FileSystemService', () => {
                 limit: 2,
             });
 
-            expect(result.content).toBe('two\nthree');
+            expect(result.content).toBe('two\nthree\n');
             expect(result.lines).toBe(2);
             expect(result.truncated).toBe(true);
             expect(result.startLine).toBe(2);
@@ -230,6 +230,36 @@ describe('FileSystemService', () => {
             expect(result.content).toBe('a\r\nb\r\n');
             expect(result.lines).toBe(2);
             expect(result.truncated).toBe(false);
+        });
+
+        it('preserves exact separators for paginated CRLF reads', async () => {
+            const fileSystemService = new FileSystemService(
+                {
+                    allowedPaths: [tempDir],
+                    blockedPaths: [],
+                    blockedExtensions: [],
+                    maxFileSize: 10 * 1024 * 1024,
+                    workingDirectory: tempDir,
+                    enableBackups: false,
+                    backupRetentionDays: 7,
+                },
+                mockLogger
+            );
+            await fileSystemService.initialize();
+
+            const testFile = path.join(tempDir, 'crlf-paged.txt');
+            await fs.writeFile(testFile, 'a\r\nb\r\nc\r\n', 'utf-8');
+
+            const result = await fileSystemService.readFile(testFile, {
+                offset: 2,
+                limit: 1,
+            });
+
+            expect(result.content).toBe('b\r\n');
+            expect(result.lines).toBe(1);
+            expect(result.truncated).toBe(true);
+            expect(result.startLine).toBe(2);
+            expect(result.nextOffset).toBe(3);
         });
     });
 
