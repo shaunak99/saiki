@@ -644,6 +644,41 @@ export class FileSystemService {
         }
 
         const inventory = new Map<string, 'file' | 'directory'>();
+        const pendingDirectories = [searchPath];
+
+        while (pendingDirectories.length > 0) {
+            const currentDirectory = pendingDirectories.pop();
+            if (!currentDirectory) {
+                continue;
+            }
+
+            let entries;
+            try {
+                entries = await fs.readdir(currentDirectory, { withFileTypes: true });
+            } catch {
+                continue;
+            }
+
+            for (const entry of entries) {
+                if (!entry.isDirectory()) {
+                    continue;
+                }
+
+                const directoryPath = path.join(currentDirectory, entry.name);
+                if (!this.pathValidator.isPathAllowedQuick(directoryPath)) {
+                    continue;
+                }
+
+                const directoryValidation = await this.pathValidator.validatePath(directoryPath);
+                if (!directoryValidation.isValid || !directoryValidation.normalizedPath) {
+                    continue;
+                }
+
+                inventory.set(directoryValidation.normalizedPath, 'directory');
+                pendingDirectories.push(directoryValidation.normalizedPath);
+            }
+        }
+
         for (const filePath of filePaths) {
             const validationResult = await this.pathValidator.validatePath(filePath);
             if (!validationResult.isValid || !validationResult.normalizedPath) {
@@ -1069,8 +1104,16 @@ export class FileSystemService {
         const maxResults = options.maxResults || DEFAULT_MAX_SEARCH_RESULTS;
         const contextLines = options.contextLines || 0;
         const literal = options.literal !== false;
+        const regexPattern = literal ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : pattern;
 
         try {
+            if (!literal && !safeRegex(regexPattern)) {
+                throw FileSystemError.invalidPattern(
+                    pattern,
+                    'Pattern may cause catastrophic backtracking (ReDoS). Please simplify the regex.'
+                );
+            }
+
             const ripgrepOptions: Parameters<typeof ripgrepSearch>[0] = {
                 cwd: searchPath,
                 pattern,
@@ -1129,15 +1172,6 @@ export class FileSystemService {
             }
 
             const flags = options.caseInsensitive ? 'i' : '';
-            const regexPattern = literal ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : pattern;
-
-            if (!literal && !safeRegex(regexPattern)) {
-                throw FileSystemError.invalidPattern(
-                    pattern,
-                    'Pattern may cause catastrophic backtracking (ReDoS). Please simplify the regex.'
-                );
-            }
-
             const regex = new RegExp(regexPattern, flags);
 
             // Find files to search

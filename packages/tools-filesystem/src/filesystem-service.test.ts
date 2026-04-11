@@ -245,6 +245,35 @@ describe('FileSystemService', () => {
                 )
             ).toBe(true);
         });
+
+        it('returns empty directories when searching for directory paths', async () => {
+            const fileSystemService = new FileSystemService(
+                {
+                    allowedPaths: [tempDir],
+                    blockedPaths: [],
+                    blockedExtensions: [],
+                    maxFileSize: 10 * 1024 * 1024,
+                    workingDirectory: tempDir,
+                    enableBackups: false,
+                    backupRetentionDays: 7,
+                },
+                mockLogger
+            );
+            await fileSystemService.initialize();
+
+            const emptyDir = path.join(tempDir, 'src', 'empty-feature');
+            await fs.mkdir(emptyDir, { recursive: true });
+
+            const result = await fileSystemService.findPaths('empty feature', {
+                pathType: 'directory',
+            });
+
+            expect(
+                result.matches.some(
+                    (match) => match.path === emptyDir && match.pathType === 'directory'
+                )
+            ).toBe(true);
+        });
     });
 
     describe('Search Semantics', () => {
@@ -274,6 +303,31 @@ describe('FileSystemService', () => {
                 literal: false,
             });
             expect(regexResult.matches).toHaveLength(2);
+        });
+
+        it('rejects unsafe regex patterns before invoking search backends', async () => {
+            const fileSystemService = new FileSystemService(
+                {
+                    allowedPaths: [tempDir],
+                    blockedPaths: [],
+                    blockedExtensions: [],
+                    maxFileSize: 10 * 1024 * 1024,
+                    workingDirectory: tempDir,
+                    enableBackups: false,
+                    backupRetentionDays: 7,
+                },
+                mockLogger
+            );
+            await fileSystemService.initialize();
+
+            const testFile = path.join(tempDir, 'unsafe-search.txt');
+            await fs.writeFile(testFile, 'aaaaaaaaaaaaaaaaaaaa\n');
+
+            await expect(
+                fileSystemService.searchContent('(a+)+$', {
+                    literal: false,
+                })
+            ).rejects.toThrow(/catastrophic backtracking|Invalid pattern/i);
         });
     });
 
