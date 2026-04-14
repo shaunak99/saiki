@@ -9,6 +9,7 @@ import type { SanitizedToolResult } from '../../context/types.js';
 import type { Logger } from '../../logger/v2/types.js';
 import { DextoLogComponent } from '../../logger/v2/types.js';
 import type { ToolPresentationSnapshotV1 } from '../../tools/types.js';
+import type { ToolCallMetadata } from '../../tools/tool-call-metadata.js';
 import { getUsagePricingMetadata } from '../usage-metadata.js';
 import type { LLMProvider, LLMPricingStatus, ReasoningVariant, TokenUsage } from '../types.js';
 
@@ -105,6 +106,7 @@ export class StreamProcessor {
             string,
             {
                 presentationSnapshot?: ToolPresentationSnapshotV1;
+                meta?: ToolCallMetadata;
                 requireApproval?: boolean;
                 approvalStatus?: 'approved' | 'rejected';
             }
@@ -315,6 +317,9 @@ export class StreamProcessor {
                             toolName: event.toolName,
                             ...(metadata?.presentationSnapshot !== undefined && {
                                 presentationSnapshot: metadata.presentationSnapshot,
+                            }),
+                            ...(metadata?.meta !== undefined && {
+                                meta: metadata.meta,
                             }),
                             callId: event.toolCallId,
                             success: true,
