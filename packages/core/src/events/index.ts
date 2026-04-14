@@ -6,6 +6,7 @@ import type { SanitizedToolResult } from '../context/types.js';
 import type { CodexRateLimitSnapshot } from '../llm/providers/codex-app-server.js';
 import type { WorkspaceContext } from '../workspace/types.js';
 import type { ToolPresentationSnapshotV1 } from '../tools/types.js';
+import type { ToolCallMetadata } from '../tools/tool-call-metadata.js';
 
 /**
  * LLM finish reason - why the LLM stopped generating
@@ -394,6 +395,8 @@ export interface AgentEventMap {
         /** Optional UI-agnostic presentation snapshot (clients MUST fall back when absent) */
         presentationSnapshot?: ToolPresentationSnapshotV1;
         args: Record<string, any>;
+        /** Optional non-execution metadata from the reserved __meta wrapper */
+        meta?: ToolCallMetadata;
         /** Optional user-facing description from tool call metadata (e.g., __meta.callDescription) */
         callDescription?: string;
         callId?: string;
@@ -416,6 +419,8 @@ export interface AgentEventMap {
         toolName: string;
         /** Optional UI-agnostic presentation snapshot (clients MUST fall back when absent) */
         presentationSnapshot?: ToolPresentationSnapshotV1;
+        /** Optional non-execution metadata from the reserved __meta wrapper */
+        meta?: ToolCallMetadata;
         callId?: string;
         success: boolean;
         /** Sanitized result - present when success=true */
@@ -670,6 +675,8 @@ export interface SessionEventMap {
         /** Optional UI-agnostic presentation snapshot (clients MUST fall back when absent) */
         presentationSnapshot?: ToolPresentationSnapshotV1;
         args: Record<string, any>;
+        /** Optional non-execution metadata from the reserved __meta wrapper */
+        meta?: ToolCallMetadata;
         /** Optional user-facing description from tool call metadata (e.g., __meta.callDescription) */
         callDescription?: string;
         callId?: string;
@@ -690,6 +697,8 @@ export interface SessionEventMap {
         toolName: string;
         /** Optional UI-agnostic presentation snapshot (clients MUST fall back when absent) */
         presentationSnapshot?: ToolPresentationSnapshotV1;
+        /** Optional non-execution metadata from the reserved __meta wrapper */
+        meta?: ToolCallMetadata;
         callId?: string;
         success: boolean;
         /** Sanitized result - present when success=true */
