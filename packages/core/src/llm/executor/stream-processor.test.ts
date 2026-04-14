@@ -1185,6 +1185,11 @@ describe('StreamProcessor', () => {
                 messageId: 'msg-1',
                 provider: 'openai',
                 model: 'gpt-4',
+                costBreakdown: {
+                    inputUsd: expect.any(Number),
+                    outputUsd: expect.any(Number),
+                    totalUsd: expect.any(Number),
+                },
                 pricingStatus: 'estimated',
                 tokenUsage: {
                     inputTokens: 100,
@@ -1383,6 +1388,11 @@ describe('StreamProcessor', () => {
             const responseEvent = mocks.emittedEvents.find((e) => e.name === 'llm:response');
             expect(responseEvent?.payload).toMatchObject({
                 finishReason: 'cancelled',
+                costBreakdown: {
+                    inputUsd: expect.any(Number),
+                    outputUsd: expect.any(Number),
+                    totalUsd: expect.any(Number),
+                },
                 pricingStatus: 'estimated',
                 tokenUsage: {
                     inputTokens: 12,

@@ -11,6 +11,7 @@ import { DextoLogComponent } from '../../logger/v2/types.js';
 import type { ToolPresentationSnapshotV1 } from '../../tools/types.js';
 import type { ToolCallMetadata } from '../../tools/tool-call-metadata.js';
 import { getUsagePricingMetadata } from '../usage-metadata.js';
+import type { TokenUsageCostBreakdown } from '../registry/index.js';
 import type { LLMProvider, LLMPricingStatus, ReasoningVariant, TokenUsage } from '../types.js';
 
 type UsageLike = {
@@ -733,6 +734,7 @@ export class StreamProcessor {
         tokenUsage: TokenUsage;
         finishReason: LLMFinishReason;
         estimatedCost?: number;
+        costBreakdown?: TokenUsageCostBreakdown;
         pricingStatus?: LLMPricingStatus;
     }): void {
         this.eventBus.emit('llm:response', {
@@ -746,6 +748,9 @@ export class StreamProcessor {
             ...(this.usageScopeId && { usageScopeId: this.usageScopeId }),
             ...(config.estimatedCost !== undefined && {
                 estimatedCost: config.estimatedCost,
+            }),
+            ...(config.costBreakdown && {
+                costBreakdown: config.costBreakdown,
             }),
             ...(config.pricingStatus && { pricingStatus: config.pricingStatus }),
             ...(this.config.estimatedInputTokens !== undefined && {
