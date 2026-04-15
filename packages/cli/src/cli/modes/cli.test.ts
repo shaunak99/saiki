@@ -45,7 +45,6 @@ describe('runCliMode', () => {
             initialPrompt: undefined,
             getVersionCheckResult: vi.fn().mockResolvedValue(null),
         } as unknown as MainModeContext;
-
         await expect(runCliMode(context)).rejects.toThrow('workspace sync failed');
         expect(agent.start).toHaveBeenCalledOnce();
         expect(applyWorkspaceToAgent).toHaveBeenCalledWith(agent, '/tmp/dexto-cloud');

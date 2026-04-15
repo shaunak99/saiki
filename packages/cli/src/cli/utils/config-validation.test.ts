@@ -75,7 +75,6 @@ vi.mock('@dexto/agent-management', () => ({
 
 describe('validateAgentConfig', () => {
     let validateAgentConfig: typeof import('./config-validation.js').validateAgentConfig;
-
     beforeAll(async () => {
         ({ validateAgentConfig } = await import('./config-validation.js'));
     });
