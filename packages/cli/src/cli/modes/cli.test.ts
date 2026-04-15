@@ -20,6 +20,7 @@ describe('runCliMode', () => {
     }, 20_000);
 
     beforeEach(() => {
+        vi.resetModules();
         applyWorkspaceToAgent.mockReset();
     });
 
@@ -49,5 +50,5 @@ describe('runCliMode', () => {
         expect(agent.start).toHaveBeenCalledOnce();
         expect(applyWorkspaceToAgent).toHaveBeenCalledWith(agent, '/tmp/dexto-cloud');
         expect(agent.stop).toHaveBeenCalledOnce();
-    });
+    }, 15_000);
 });

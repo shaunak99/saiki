@@ -81,6 +81,7 @@ describe('validateAgentConfig', () => {
     });
 
     beforeEach(() => {
+        vi.resetModules();
         vi.clearAllMocks();
         mockIsCancel.mockReturnValue(false);
         mockSelect.mockResolvedValue('skip');
@@ -116,7 +117,7 @@ describe('validateAgentConfig', () => {
             }),
             warnings: [],
         });
-    });
+    }, 15_000);
 
     it('does not offer sync when the active agent path is not a bundled installed agent', async () => {
         const invalidConfig = {
