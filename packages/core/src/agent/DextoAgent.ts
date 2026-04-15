@@ -1759,7 +1759,12 @@ export class DextoAgent {
             this.systemPromptManager,
             this.resourceManager,
             userText,
-            this.logger
+            this.logger,
+            {
+                ...(this.overrides.languageModelFactory !== undefined && {
+                    languageModelFactory: this.overrides.languageModelFactory,
+                }),
+            }
         );
 
         let title = result.title;
