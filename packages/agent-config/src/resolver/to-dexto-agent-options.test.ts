@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { DextoImage, DextoHostContext } from '../image/types.js';
+import { z } from 'zod';
+import type {
+    DextoImage,
+    DextoHostContext,
+    ResolveImageRuntimeConfigOptions,
+} from '../image/types.js';
 import { AgentConfigSchema } from '../schemas/agent-config.js';
 import type { ResolvedServices } from './types.js';
 import { toDextoAgentOptions } from './to-dexto-agent-options.js';
-import validImage from './__fixtures__/valid-image.js';
 import {
     createMockBlobStore,
     createMockCache,
@@ -13,6 +17,49 @@ import {
 } from './__fixtures__/test-mocks.js';
 
 describe('toDextoAgentOptions', () => {
+    function createMockImage<THostContext extends DextoHostContext = DextoHostContext>(
+        overrides?: Partial<DextoImage<THostContext>>
+    ): DextoImage<THostContext> {
+        const image: DextoImage<THostContext> = {
+            metadata: { name: 'mock-image', version: '0.0.0', description: 'mock' },
+            tools: {
+                'noop-tools': {
+                    configSchema: z.object({ type: z.literal('noop-tools') }).passthrough(),
+                    create: () => [],
+                },
+            },
+            storage: {
+                blob: {
+                    'in-memory': {
+                        configSchema: z.any(),
+                        create: () => createMockBlobStore('in-memory'),
+                    },
+                },
+                database: {
+                    'in-memory': {
+                        configSchema: z.any(),
+                        create: () => createMockDatabase('in-memory'),
+                    },
+                },
+                cache: {
+                    'in-memory': {
+                        configSchema: z.any(),
+                        create: () => createMockCache('in-memory'),
+                    },
+                },
+            },
+            hooks: {},
+            compaction: {},
+            logger: {
+                configSchema: z.object({}).passthrough(),
+                create: () => createMockLogger(),
+            },
+            ...(overrides ?? {}),
+        };
+
+        return image;
+    }
+
     it('combines validated config + resolved services into DextoAgentOptions', () => {
         const validated = AgentConfigSchema.parse({
             systemPrompt: 'You are a helpful assistant',
@@ -137,21 +184,43 @@ describe('toDextoAgentOptions', () => {
             compaction: null,
         };
 
-        const hostContext: DextoHostContext = {
+        type HostedContext = DextoHostContext<
+            { session: { id: string } },
+            { workspace: boolean },
+            { gateway: { id: string } }
+        >;
+
+        const hostContext: HostedContext = {
             mode: 'hosted',
             sessionId: 'session-1',
             workspaceId: 'workspace-1',
-        };
-        const resolveRuntimeConfig = vi.fn(() => ({
-            llm: {
-                ...validated.llm,
-                apiKey: 'resolved-api-key',
+            runtime: {
+                session: { id: 'session-1' },
             },
-        }));
-        const image = {
-            ...validImage,
+            capabilities: {
+                workspace: true,
+            },
+            clients: {
+                gateway: { id: 'gateway-1' },
+            },
+        };
+        const resolveRuntimeConfig = vi.fn(
+            ({ context }: ResolveImageRuntimeConfigOptions<HostedContext>) => {
+                expect(context.hostContext?.runtime?.session.id).toBe('session-1');
+                expect(context.hostContext?.capabilities?.workspace).toBe(true);
+                expect(context.hostContext?.clients?.gateway.id).toBe('gateway-1');
+
+                return {
+                    llm: {
+                        ...validated.llm,
+                        apiKey: 'resolved-api-key',
+                    },
+                };
+            }
+        );
+        const image = createMockImage<HostedContext>({
             resolveRuntimeConfig,
-        } as unknown as DextoImage;
+        });
 
         const options = toDextoAgentOptions({
             config: validated,
