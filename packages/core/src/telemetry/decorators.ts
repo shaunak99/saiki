@@ -10,10 +10,12 @@ import {
 import type { Logger } from '../logger/v2/types.js';
 import { hasActiveTelemetry, getBaggageValues } from './utils.js';
 import { safeStringify } from '../utils/safe-stringify.js';
+import { getHostRuntimeAttributes, getHostRuntimeBaggageEntries } from '../runtime/index.js';
 
 // Decorator factory that takes optional spanName
 export function withSpan(options: {
     spanName?: string;
+    componentName?: string;
     skipIfNoTelemetry?: boolean;
     spanKind?: SpanKind;
     tracerName?: string;
@@ -68,8 +70,15 @@ export function withSpan(options: {
             });
 
             // Extract baggage values from the current context (may include values set by parent spans)
-            const { requestId, componentName, runId, threadId, resourceId, sessionId } =
-                getBaggageValues(ctx);
+            const {
+                requestId,
+                componentName,
+                runId,
+                threadId,
+                resourceId,
+                sessionId,
+                hostRuntime,
+            } = getBaggageValues(ctx);
 
             // Add all baggage values to span attributes
             // Set both direct attributes and baggage-prefixed versions for storage schema fallback
@@ -98,79 +107,83 @@ export function withSpan(options: {
                 span.setAttribute('baggage.runId', String(runId));
             }
 
+            for (const [key, value] of Object.entries(getHostRuntimeAttributes(hostRuntime))) {
+                span.setAttribute(key, value);
+            }
+
+            const inferredComponentName = options?.componentName;
+            const effectiveHostRuntime = hostRuntime;
+            const effectiveRunId = effectiveHostRuntime?.ids?.runId ?? runId;
+
             if (componentName) {
                 span.setAttribute('componentName', componentName);
                 span.setAttribute('baggage.componentName', componentName);
-            } else if (this && typeof this === 'object') {
-                const contextObj = this as {
-                    name?: string;
-                    runId?: string;
-                    constructor?: { name?: string };
+            } else if (inferredComponentName) {
+                span.setAttribute('componentName', inferredComponentName);
+            }
+
+            if (effectiveRunId !== undefined) {
+                span.setAttribute('runId', String(effectiveRunId));
+                span.setAttribute('baggage.runId', String(effectiveRunId));
+            }
+
+            for (const [key, value] of Object.entries(
+                getHostRuntimeAttributes(effectiveHostRuntime)
+            )) {
+                span.setAttribute(key, value);
+            }
+
+            // Merge with existing baggage to preserve parent context values.
+            const existingBaggage = propagation.getBaggage(ctx);
+            const baggageEntries: Record<string, BaggageEntry> = {};
+
+            if (existingBaggage) {
+                existingBaggage.getAllEntries().forEach(([key, entry]) => {
+                    baggageEntries[key] = entry;
+                });
+            }
+
+            if (sessionId !== undefined) {
+                baggageEntries.sessionId = {
+                    ...baggageEntries.sessionId,
+                    value: String(sessionId),
                 };
-                // Prefer instance.name, fallback to constructor.name
-                const inferredName = contextObj.name ?? contextObj.constructor?.name;
-                if (inferredName) {
-                    span.setAttribute('componentName', inferredName);
-                }
-                if (contextObj.runId) {
-                    span.setAttribute('runId', contextObj.runId);
-                    span.setAttribute('baggage.runId', contextObj.runId);
-                }
+            }
+            if (requestId !== undefined) {
+                baggageEntries['http.request_id'] = {
+                    ...baggageEntries['http.request_id'],
+                    value: String(requestId),
+                };
+            }
+            if (threadId !== undefined) {
+                baggageEntries.threadId = {
+                    ...baggageEntries.threadId,
+                    value: String(threadId),
+                };
+            }
+            if (resourceId !== undefined) {
+                baggageEntries.resourceId = {
+                    ...baggageEntries.resourceId,
+                    value: String(resourceId),
+                };
+            }
+            if (componentName === undefined && inferredComponentName !== undefined) {
+                baggageEntries.componentName = {
+                    ...baggageEntries.componentName,
+                    value: String(inferredComponentName),
+                };
+            }
+            if (effectiveRunId !== undefined) {
+                baggageEntries.runId = {
+                    ...baggageEntries.runId,
+                    value: String(effectiveRunId),
+                };
+            }
 
-                // Merge with existing baggage to preserve parent context values
-                const existingBaggage = propagation.getBaggage(ctx);
-                const baggageEntries: Record<string, BaggageEntry> = {};
+            Object.assign(baggageEntries, getHostRuntimeBaggageEntries(effectiveHostRuntime));
 
-                // Copy all existing baggage entries to preserve custom baggage
-                if (existingBaggage) {
-                    existingBaggage.getAllEntries().forEach(([key, entry]) => {
-                        baggageEntries[key] = entry;
-                    });
-                }
-
-                // Preserve existing baggage values and metadata
-                if (sessionId !== undefined) {
-                    baggageEntries.sessionId = {
-                        ...baggageEntries.sessionId,
-                        value: String(sessionId),
-                    };
-                }
-                if (requestId !== undefined) {
-                    baggageEntries['http.request_id'] = {
-                        ...baggageEntries['http.request_id'],
-                        value: String(requestId),
-                    };
-                }
-                if (threadId !== undefined) {
-                    baggageEntries.threadId = {
-                        ...baggageEntries.threadId,
-                        value: String(threadId),
-                    };
-                }
-                if (resourceId !== undefined) {
-                    baggageEntries.resourceId = {
-                        ...baggageEntries.resourceId,
-                        value: String(resourceId),
-                    };
-                }
-
-                // Add new component-specific baggage values
-                if (inferredName !== undefined) {
-                    baggageEntries.componentName = {
-                        ...baggageEntries.componentName,
-                        value: String(inferredName),
-                    };
-                }
-                if (contextObj.runId !== undefined) {
-                    baggageEntries.runId = {
-                        ...baggageEntries.runId,
-                        value: String(contextObj.runId),
-                    };
-                }
-
-                if (Object.keys(baggageEntries).length > 0) {
-                    ctx = propagation.setBaggage(ctx, propagation.createBaggage(baggageEntries));
-                }
+            if (Object.keys(baggageEntries).length > 0) {
+                ctx = propagation.setBaggage(ctx, propagation.createBaggage(baggageEntries));
             }
 
             let result: unknown;
@@ -235,6 +248,7 @@ export function withSpan(options: {
 // class-telemetry.decorator.ts
 export function InstrumentClass(options?: {
     prefix?: string;
+    componentName?: string;
     spanKind?: SpanKind;
     excludeMethods?: string[];
     methodFilter?: (methodName: string) => boolean;
@@ -259,6 +273,7 @@ export function InstrumentClass(options?: {
                         spanName: options?.prefix ? `${options.prefix}.${method}` : method,
                         skipIfNoTelemetry: true,
                         spanKind: options?.spanKind || SpanKind.INTERNAL,
+                        componentName: options?.componentName ?? target.name,
                         ...(options?.tracerName !== undefined && {
                             tracerName: options.tracerName,
                         }),

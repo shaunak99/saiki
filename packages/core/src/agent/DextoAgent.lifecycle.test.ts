@@ -40,6 +40,16 @@ import { generateSessionTitle } from '../session/title-generator.js';
 const mockCreateAgentServices = vi.mocked(createAgentServices);
 const mockGenerateSessionTitle = vi.mocked(generateSessionTitle);
 
+function createDeferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
+
 describe('DextoAgent Lifecycle Management', () => {
     let mockValidatedConfig: AgentRuntimeSettings;
     let mockServices: AgentServices;
@@ -271,6 +281,45 @@ describe('DextoAgent Lifecycle Management', () => {
                 expect.any(Object),
                 null
             );
+        });
+
+        test('should expose host runtime IDs through tool execution context', async () => {
+            const hostRuntime = {
+                ids: {
+                    runId: 'run-1',
+                    attemptId: 'attempt-1',
+                },
+            };
+            const agent = createTestAgent(mockValidatedConfig);
+
+            await agent.start();
+
+            const setFactoryMock = vi.mocked(
+                mockServices.toolManager.setToolExecutionContextFactory
+            );
+            const factory = setFactoryMock.mock.calls[0]?.[0];
+            expect(factory).toBeDefined();
+
+            const context = factory?.({
+                sessionId: 'session-1',
+                runContext: {
+                    sessionId: 'session-1',
+                    hostRuntime,
+                    telemetryContext: {} as any,
+                },
+                logger: createLogger({
+                    config: LoggerConfigSchema.parse({
+                        level: 'error',
+                        transports: [{ type: 'silent' }],
+                    }),
+                    agentId: 'test-agent',
+                }),
+            });
+
+            expect(context).toMatchObject({
+                sessionId: 'session-1',
+                hostRuntime,
+            });
         });
 
         test('should start with per-server connection modes in config', async () => {
@@ -581,6 +630,194 @@ describe('DextoAgent Lifecycle Management', () => {
     });
 
     describe('Stream Error Lifecycle', () => {
+        test('passes an explicit run context to session.stream', async () => {
+            const agent = createTestAgent(mockValidatedConfig);
+            const executionContext = {
+                ids: {
+                    runId: 'run-1',
+                    attemptId: 'attempt-1',
+                },
+            };
+            const sessionStream = vi.fn().mockImplementation(async () => {
+                agent.emit('run:complete', {
+                    sessionId: 'test-session',
+                    finishReason: 'stop',
+                    stepCount: 0,
+                    durationMs: 1,
+                });
+                return { text: 'ok' };
+            });
+            mockServices.sessionManager.getSession = vi.fn().mockResolvedValue({
+                id: 'test-session',
+                stream: sessionStream,
+            });
+
+            await agent.start();
+
+            const events: StreamingEvent[] = [];
+            for await (const event of await agent.stream('hello', 'test-session', {
+                executionContext,
+            })) {
+                events.push(event);
+            }
+
+            expect(events).toEqual([
+                {
+                    name: 'run:complete',
+                    sessionId: 'test-session',
+                    finishReason: 'stop',
+                    stepCount: 0,
+                    durationMs: 1,
+                },
+            ]);
+            expect(sessionStream).toHaveBeenCalledWith(
+                [{ type: 'text', text: 'hello' }],
+                expect.objectContaining({
+                    runContext: expect.objectContaining({
+                        sessionId: 'test-session',
+                        hostRuntime: executionContext,
+                    }),
+                })
+            );
+            expect(mockServices.sessionManager).not.toHaveProperty('withExecutionContext');
+        });
+
+        test('should reject invalid execution context as a typed API validation error', async () => {
+            const agent = createTestAgent(mockValidatedConfig);
+
+            await agent.start();
+
+            await expect(
+                agent.stream('hello', 'test-session', {
+                    executionContext: {
+                        ids: {
+                            'invalid+key': 'run-1',
+                        },
+                    },
+                })
+            ).rejects.toMatchObject({
+                code: AgentErrorCode.API_VALIDATION_ERROR,
+                scope: ErrorScope.AGENT,
+                type: ErrorType.USER,
+            });
+
+            expect(mockServices.sessionManager.getSession).not.toHaveBeenCalled();
+        });
+
+        test('should clear the active stream controller when preflight rejects', async () => {
+            const agent = createTestAgent(mockValidatedConfig);
+            const sessionStream = vi.fn().mockImplementation(async () => {
+                agent.emit('run:complete', {
+                    sessionId: 'test-session',
+                    finishReason: 'stop',
+                    stepCount: 0,
+                    durationMs: 1,
+                });
+                return { text: 'ok' };
+            });
+            const busySession = {
+                id: 'test-session',
+                isBusy: vi.fn().mockReturnValue(true),
+            };
+            let getSessionCallCount = 0;
+
+            mockServices.sessionManager.getSession = vi.fn().mockImplementation(async () => {
+                getSessionCallCount += 1;
+                if (getSessionCallCount === 1) {
+                    return busySession;
+                }
+                return undefined;
+            });
+            mockServices.sessionManager.createSession = vi.fn().mockResolvedValue({
+                id: 'test-session',
+                stream: sessionStream,
+            });
+
+            await agent.start();
+
+            await expect(agent.stream('hello', 'test-session')).rejects.toMatchObject({
+                code: AgentErrorCode.SESSION_BUSY,
+                scope: ErrorScope.AGENT,
+                type: ErrorType.CONFLICT,
+            });
+
+            const events: StreamingEvent[] = [];
+            for await (const event of await agent.stream('again', 'test-session')) {
+                events.push(event);
+            }
+
+            expect(events).toEqual([
+                {
+                    name: 'run:complete',
+                    sessionId: 'test-session',
+                    finishReason: 'stop',
+                    stepCount: 0,
+                    durationMs: 1,
+                },
+            ]);
+            expect(sessionStream).toHaveBeenCalledTimes(1);
+        });
+
+        test('should reject overlapping stream calls for the same session', async () => {
+            const agent = createTestAgent(mockValidatedConfig);
+            const deferred = createDeferred<void>();
+            const session = {
+                id: 'test-session',
+                stream: vi.fn().mockImplementation(async () => await deferred.promise),
+                isBusy: vi.fn().mockReturnValue(true),
+            };
+            let getSessionCallCount = 0;
+
+            mockServices.sessionManager.getSession = vi.fn().mockImplementation(async () => {
+                getSessionCallCount += 1;
+                return getSessionCallCount === 1 ? undefined : session;
+            });
+
+            await agent.start();
+
+            const iterator = await agent.stream('hello', 'test-session');
+
+            await expect(agent.stream('again', 'test-session')).rejects.toMatchObject({
+                code: AgentErrorCode.SESSION_BUSY,
+                scope: ErrorScope.AGENT,
+                type: ErrorType.CONFLICT,
+            });
+
+            await iterator.return?.();
+            deferred.resolve();
+            await Promise.resolve();
+        });
+
+        test('should reject a new stream after disconnect when the session is still busy', async () => {
+            const agent = createTestAgent(mockValidatedConfig);
+            const deferred = createDeferred<void>();
+            const session = {
+                id: 'test-session',
+                stream: vi.fn().mockImplementation(async () => await deferred.promise),
+                isBusy: vi.fn().mockReturnValue(true),
+            };
+            let getSessionCallCount = 0;
+
+            mockServices.sessionManager.getSession = vi.fn().mockImplementation(async () => {
+                getSessionCallCount += 1;
+                return getSessionCallCount === 1 ? undefined : session;
+            });
+
+            await agent.start();
+
+            const iterator = await agent.stream('hello', 'test-session');
+            await iterator.return?.();
+
+            await expect(agent.stream('again', 'test-session')).rejects.toMatchObject({
+                code: AgentErrorCode.SESSION_BUSY,
+                scope: ErrorScope.AGENT,
+                type: ErrorType.CONFLICT,
+            });
+
+            deferred.resolve();
+            await Promise.resolve();
+        });
+
         test('should prefer the terminal fatal event emitted on the agent bus over a fallback run_failed error', async () => {
             const agent = createTestAgent(mockValidatedConfig);
             const mappedError = new DextoRuntimeError(

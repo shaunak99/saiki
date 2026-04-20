@@ -45,10 +45,17 @@ import type {
     DynamicContributorContext,
     DynamicContributorContextFactory,
 } from '../systemPrompt/types.js';
+import type { AgentRunContext } from '../runtime/run-context.js';
 
 export type ToolExecutionContextFactory = (
     baseContext: ToolExecutionContextBase
 ) => ToolExecutionContext;
+
+type ToolExecutionInvocation = {
+    sessionId?: string | undefined;
+    abortSignal?: AbortSignal | undefined;
+    runContext?: AgentRunContext | undefined;
+};
 /**
  * Unified Tool Manager - Single interface for all tool operations
  *
@@ -867,7 +874,8 @@ export class ToolManager {
         toolName: string,
         args: Record<string, unknown>,
         toolCallId: string,
-        sessionId?: string
+        sessionId?: string,
+        runContext?: AgentRunContext
     ): ToolPresentationSnapshotV1 {
         const fallback = this.buildGenericToolPresentationSnapshot(toolName);
 
@@ -883,7 +891,7 @@ export class ToolManager {
 
         try {
             const validatedArgs = this.validateLocalToolArgs(toolName, args);
-            const context = this.buildToolExecutionContext({ sessionId, toolCallId });
+            const context = this.buildToolExecutionContext({ sessionId, toolCallId, runContext });
 
             const isPromiseLike = (value: unknown): value is PromiseLike<unknown> => {
                 if (typeof value !== 'object' || value === null) {
@@ -929,7 +937,8 @@ export class ToolManager {
         toolName: string,
         args: Record<string, unknown>,
         toolCallId: string,
-        sessionId?: string
+        sessionId?: string,
+        runContext?: AgentRunContext
     ): Promise<ToolPresentationSnapshotV1> {
         const fallback = this.buildGenericToolPresentationSnapshot(toolName);
 
@@ -944,7 +953,7 @@ export class ToolManager {
         }
 
         try {
-            const context = this.buildToolExecutionContext({ sessionId, toolCallId });
+            const context = this.buildToolExecutionContext({ sessionId, toolCallId, runContext });
             const describedHeader = describeHeader
                 ? await Promise.resolve(describeHeader(args, context))
                 : null;
@@ -973,7 +982,8 @@ export class ToolManager {
         result: unknown,
         args: Record<string, unknown>,
         toolCallId: string,
-        sessionId?: string
+        sessionId?: string,
+        runContext?: AgentRunContext
     ): Promise<ToolPresentationSnapshotV1> {
         if (toolName.startsWith(ToolManager.MCP_TOOL_PREFIX)) {
             return snapshot;
@@ -985,7 +995,7 @@ export class ToolManager {
         }
 
         try {
-            const context = this.buildToolExecutionContext({ sessionId, toolCallId });
+            const context = this.buildToolExecutionContext({ sessionId, toolCallId, runContext });
             const resultPresentation = await Promise.resolve(describeResult(result, args, context));
             if (!resultPresentation) {
                 return snapshot;
@@ -1289,17 +1299,48 @@ export class ToolManager {
         sessionId?: string | undefined;
         abortSignal?: AbortSignal | undefined;
         toolCallId?: string | undefined;
+        runContext?: AgentRunContext | undefined;
     }): ToolExecutionContext {
         const workspace = this.currentWorkspace;
         const baseContext: ToolExecutionContextBase = {
             sessionId: options.sessionId,
+            runContext: options.runContext,
             workspaceId: workspace?.id,
             workspace,
             abortSignal: options.abortSignal,
             toolCallId: options.toolCallId,
+            hostRuntime: options.runContext?.hostRuntime,
             logger: this.logger,
         };
         return this.toolExecutionContextFactory(baseContext);
+    }
+
+    private resolveToolExecutionInvocation(
+        invocationOrSessionId?: ToolExecutionInvocation | string,
+        legacyAbortSignal?: AbortSignal
+    ): ToolExecutionInvocation & {
+        sessionId?: string | undefined;
+        hostRuntime?: ToolExecutionContext['hostRuntime'];
+    } {
+        if (typeof invocationOrSessionId === 'string') {
+            return {
+                sessionId: invocationOrSessionId,
+                abortSignal: legacyAbortSignal,
+                hostRuntime: undefined,
+            };
+        }
+
+        const invocation = invocationOrSessionId ?? {};
+        const sessionId = invocation.runContext?.sessionId ?? invocation.sessionId;
+
+        return {
+            ...invocation,
+            ...(invocation.abortSignal === undefined && legacyAbortSignal !== undefined
+                ? { abortSignal: legacyAbortSignal }
+                : {}),
+            sessionId,
+            hostRuntime: invocation.runContext?.hostRuntime,
+        };
     }
 
     private validateLocalToolArgs(
@@ -1339,9 +1380,12 @@ export class ToolManager {
     private async executeLocalTool(
         toolName: string,
         args: Record<string, unknown>,
-        sessionId?: string,
-        abortSignal?: AbortSignal,
-        toolCallId?: string
+        options?: {
+            sessionId?: string | undefined;
+            abortSignal?: AbortSignal | undefined;
+            toolCallId?: string | undefined;
+            runContext?: AgentRunContext | undefined;
+        }
     ): Promise<unknown> {
         const tool = this.agentTools.get(toolName);
         if (!tool) {
@@ -1353,7 +1397,12 @@ export class ToolManager {
         }
 
         try {
-            const context = this.buildToolExecutionContext({ sessionId, abortSignal, toolCallId });
+            const context = this.buildToolExecutionContext({
+                sessionId: options?.sessionId,
+                abortSignal: options?.abortSignal,
+                toolCallId: options?.toolCallId,
+                runContext: options?.runContext,
+            });
             const result = await tool.execute(args, context);
             return result;
         } catch (error) {
@@ -1467,16 +1516,19 @@ export class ToolManager {
      * @param toolName Tool name (e.g., "edit_file", "mcp--filesystem--read_file")
      * @param args The arguments for the tool
      * @param toolCallId The unique tool call ID for tracking (from LLM or generated for direct calls)
-     * @param sessionId Optional session ID for context
-     * @param abortSignal Optional abort signal for cancellation support
+     * @param invocationOrSessionId Optional execution-scoped context for this tool call,
+     * or the legacy positional sessionId
+     * @param legacyAbortSignal Optional legacy positional abort signal
      */
     async executeTool(
         toolName: string,
         args: Record<string, unknown>,
         toolCallId: string,
-        sessionId?: string,
-        abortSignal?: AbortSignal
+        invocationOrSessionId?: ToolExecutionInvocation | string,
+        legacyAbortSignal?: AbortSignal
     ): Promise<import('./types.js').ToolExecutionResult> {
+        const { sessionId, abortSignal, runContext, hostRuntime } =
+            this.resolveToolExecutionInvocation(invocationOrSessionId, legacyAbortSignal);
         const { toolArgs: rawToolArgs, meta } = extractToolCallMeta(args);
         const eventMeta: ToolCallMetadata | undefined =
             Object.keys(meta).length > 0 ? meta : undefined;
@@ -1506,7 +1558,8 @@ export class ToolManager {
                 toolName,
                 toolArgs,
                 toolCallId,
-                sessionId
+                sessionId,
+                runContext
             );
             this.agentEventBus.emit('llm:tool-call', {
                 toolName,
@@ -1516,6 +1569,7 @@ export class ToolManager {
                 ...(callDescription !== undefined && { callDescription }),
                 callId: toolCallId,
                 sessionId,
+                ...(hostRuntime !== undefined && { hostRuntime }),
             });
         }
 
@@ -1530,6 +1584,7 @@ export class ToolManager {
             toolArgs,
             toolCallId,
             sessionId,
+            runContext,
             callDescription
         );
         toolArgs = validatedToolArgs;
@@ -1546,6 +1601,7 @@ export class ToolManager {
                 toolName,
                 toolCallId,
                 sessionId,
+                ...(hostRuntime !== undefined && { hostRuntime }),
             });
         }
 
@@ -1567,6 +1623,7 @@ export class ToolManager {
                     mcpManager: this.mcpManager,
                     toolManager: this,
                     stateManager: this.stateManager,
+                    ...(runContext !== undefined && { runContext }),
                     ...(sessionId !== undefined && { sessionId }),
                 }
             );
@@ -1614,6 +1671,15 @@ export class ToolManager {
                     backgroundTasksEnabled &&
                     meta.runInBackground === true &&
                     sessionId !== undefined;
+                const executeMcpTool = () =>
+                    runContext === undefined
+                        ? this.mcpManager.executeTool(actualToolName, toolArgs, sessionId)
+                        : this.mcpManager.executeTool(
+                              actualToolName,
+                              toolArgs,
+                              sessionId,
+                              runContext
+                          );
                 if (meta.runInBackground === true && !backgroundTasksEnabled) {
                     this.logger.debug(
                         'Background tool execution disabled; running synchronously instead.',
@@ -1623,7 +1689,7 @@ export class ToolManager {
                 if (runInBackground) {
                     const backgroundSessionId = sessionId;
                     const { result: backgroundResult, promise } = registerBackgroundTask(
-                        this.mcpManager.executeTool(actualToolName, toolArgs, backgroundSessionId),
+                        executeMcpTool(),
                         `MCP tool ${actualToolName}`
                     );
                     this.agentEventBus.emit('tool:background', {
@@ -1632,6 +1698,7 @@ export class ToolManager {
                         sessionId: backgroundSessionId,
                         description: backgroundResult.description,
                         promise,
+                        ...(hostRuntime !== undefined && { hostRuntime }),
                         ...(meta.timeoutMs !== undefined && { timeoutMs: meta.timeoutMs }),
                         ...(meta.notifyOnComplete !== undefined && {
                             notifyOnComplete: meta.notifyOnComplete,
@@ -1639,7 +1706,7 @@ export class ToolManager {
                     });
                     result = backgroundResult;
                 } else {
-                    result = await this.mcpManager.executeTool(actualToolName, toolArgs, sessionId);
+                    result = await executeMcpTool();
                 }
             } else {
                 // Route to local tools
@@ -1657,13 +1724,12 @@ export class ToolManager {
                 if (runInBackground) {
                     const backgroundSessionId = sessionId;
                     const { result: backgroundResult, promise } = registerBackgroundTask(
-                        this.executeLocalTool(
-                            toolName,
-                            toolArgs,
-                            backgroundSessionId,
+                        this.executeLocalTool(toolName, toolArgs, {
+                            sessionId: backgroundSessionId,
                             abortSignal,
-                            toolCallId
-                        ),
+                            toolCallId,
+                            runContext,
+                        }),
                         `Tool ${toolName}`
                     );
                     this.agentEventBus.emit('tool:background', {
@@ -1672,6 +1738,7 @@ export class ToolManager {
                         sessionId: backgroundSessionId,
                         description: backgroundResult.description,
                         promise,
+                        ...(hostRuntime !== undefined && { hostRuntime }),
                         ...(meta.timeoutMs !== undefined && { timeoutMs: meta.timeoutMs }),
                         ...(meta.notifyOnComplete !== undefined && {
                             notifyOnComplete: meta.notifyOnComplete,
@@ -1679,13 +1746,12 @@ export class ToolManager {
                     });
                     result = backgroundResult;
                 } else {
-                    result = await this.executeLocalTool(
-                        toolName,
-                        toolArgs,
+                    result = await this.executeLocalTool(toolName, toolArgs, {
                         sessionId,
                         abortSignal,
-                        toolCallId
-                    );
+                        toolCallId,
+                        runContext,
+                    });
                 }
             }
 
@@ -1712,6 +1778,7 @@ export class ToolManager {
                         mcpManager: this.mcpManager,
                         toolManager: this,
                         stateManager: this.stateManager,
+                        ...(runContext !== undefined && { runContext }),
                         ...(sessionId !== undefined && { sessionId }),
                     }
                 );
@@ -1726,7 +1793,8 @@ export class ToolManager {
                 result,
                 toolArgs,
                 toolCallId,
-                sessionId
+                sessionId,
+                runContext
             );
 
             return {
@@ -1757,6 +1825,7 @@ export class ToolManager {
                     mcpManager: this.mcpManager,
                     toolManager: this,
                     stateManager: this.stateManager,
+                    ...(runContext !== undefined && { runContext }),
                     ...(sessionId !== undefined && { sessionId }),
                 });
             }
@@ -1906,6 +1975,7 @@ export class ToolManager {
         args: Record<string, unknown>,
         toolCallId: string,
         sessionId?: string,
+        runContext?: AgentRunContext,
         callDescription?: string
     ): Promise<{
         requireApproval: boolean;
@@ -1926,7 +1996,8 @@ export class ToolManager {
             toolName,
             validatedArgs,
             toolCallId,
-            sessionId
+            sessionId,
+            runContext
         );
 
         // 2. Tool-specific approval override (directory access and other custom approvals)
@@ -1936,7 +2007,11 @@ export class ToolManager {
         if (!toolName.startsWith(ToolManager.MCP_TOOL_PREFIX)) {
             const getApprovalOverride = this.getToolApprovalOverrideFn(toolName);
             if (getApprovalOverride) {
-                const context = this.buildToolExecutionContext({ sessionId, toolCallId });
+                const context = this.buildToolExecutionContext({
+                    sessionId,
+                    toolCallId,
+                    runContext,
+                });
                 const approvalRequest = await getApprovalOverride(validatedArgs, context);
 
                 if (approvalRequest) {
@@ -1967,6 +2042,12 @@ export class ToolManager {
                         // Add sessionId to the approval request if not already present
                         if (sessionId && !approvalRequest.sessionId) {
                             approvalRequest.sessionId = sessionId;
+                        }
+                        if (
+                            runContext?.hostRuntime !== undefined &&
+                            approvalRequest.hostRuntime === undefined
+                        ) {
+                            approvalRequest.hostRuntime = runContext.hostRuntime;
                         }
 
                         const response =
@@ -2019,6 +2100,7 @@ export class ToolManager {
             validatedArgs,
             toolCallId,
             sessionId,
+            runContext,
             directoryAccess,
             directoryAccessApprovalRequest,
             callDescription,
@@ -2116,6 +2198,7 @@ export class ToolManager {
         args: Record<string, unknown>,
         toolCallId: string,
         sessionId?: string,
+        runContext?: AgentRunContext,
         directoryAccess?: DirectoryAccessMetadata,
         directoryAccessApprovalRequest?: ApprovalRequestDetails,
         callDescription?: string,
@@ -2131,8 +2214,11 @@ export class ToolManager {
                 toolName,
                 args,
                 toolCallId,
-                sessionId
+                sessionId,
+                runContext
             );
+            const hostRuntime =
+                runContext?.hostRuntime ?? directoryAccessApprovalRequest?.hostRuntime;
 
             // Get suggested patterns if applicable
             const suggestedPatterns = this.getToolSuggestedPatterns(toolName, args);
@@ -2145,6 +2231,7 @@ export class ToolManager {
                 args,
                 ...(callDescription !== undefined && { description: callDescription }),
                 ...(sessionId !== undefined && { sessionId }),
+                ...(hostRuntime !== undefined && { hostRuntime }),
                 ...(displayPreview !== undefined && { displayPreview }),
                 ...(directoryAccess !== undefined && { directoryAccess }),
                 ...(suggestedPatterns !== undefined && { suggestedPatterns }),
@@ -2157,7 +2244,11 @@ export class ToolManager {
             ) {
                 const onGranted = this.getToolApprovalOnGrantedFn(toolName);
                 if (onGranted) {
-                    const context = this.buildToolExecutionContext({ sessionId, toolCallId });
+                    const context = this.buildToolExecutionContext({
+                        sessionId,
+                        toolCallId,
+                        runContext,
+                    });
                     await Promise.resolve(
                         onGranted(response, context, directoryAccessApprovalRequest)
                     );
@@ -2193,7 +2284,8 @@ export class ToolManager {
         toolName: string,
         args: Record<string, unknown>,
         toolCallId: string,
-        sessionId?: string
+        sessionId?: string,
+        runContext?: AgentRunContext
     ): Promise<ToolDisplayData | undefined> {
         const previewFn = this.getToolPreviewFn(toolName);
         if (!previewFn) {
@@ -2201,7 +2293,7 @@ export class ToolManager {
         }
 
         try {
-            const context = this.buildToolExecutionContext({ sessionId, toolCallId });
+            const context = this.buildToolExecutionContext({ sessionId, toolCallId, runContext });
             const preview = await previewFn(args, context);
             this.logger.debug(`Generated preview for ${toolName}`);
             return preview ?? undefined;

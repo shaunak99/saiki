@@ -148,7 +148,9 @@ describe('toDextoAgentOptions', () => {
         const options = toDextoAgentOptions({
             config: validated,
             services,
-            runtimeOverrides: { usageScopeId: 'cloud-agent-1' },
+            runtimeOverrides: {
+                usageScopeId: 'cloud-agent-1',
+            },
         });
 
         expect(options.usageScopeId).toBe('cloud-agent-1');

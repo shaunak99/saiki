@@ -1,4 +1,3 @@
-import { EventEmitter } from 'events';
 import type { LLMProvider, LLMPricingStatus, ReasoningVariant, TokenUsage } from '../llm/types.js';
 import type { TokenUsageCostBreakdown } from '../llm/registry/index.js';
 import type { AgentRuntimeSettings } from '../agent/runtime-config.js';
@@ -8,6 +7,7 @@ import type { CodexRateLimitSnapshot } from '../llm/providers/codex-app-server.j
 import type { WorkspaceContext } from '../workspace/types.js';
 import type { ToolPresentationSnapshotV1 } from '../tools/types.js';
 import type { ToolCallMetadata } from '../tools/tool-call-metadata.js';
+import type { HostRuntimeContext } from '../runtime/index.js';
 
 /**
  * LLM finish reason - why the LLM stopped generating
@@ -59,10 +59,7 @@ export const AGENT_EVENT_NAMES = [
     'tool:background-completed',
 ] as const;
 
-/**
- * Session-level event names - events that occur within individual sessions
- */
-export const SESSION_EVENT_NAMES = [
+export const FORWARDED_SESSION_EVENT_NAMES = [
     'llm:thinking',
     'llm:chunk',
     'llm:response',
@@ -71,7 +68,6 @@ export const SESSION_EVENT_NAMES = [
     'llm:tool-call-partial',
     'llm:tool-result',
     'llm:error',
-    'llm:switched',
     'llm:unsupported-input',
     'tool:running',
     'context:compacting',
@@ -81,6 +77,18 @@ export const SESSION_EVENT_NAMES = [
     'message:dequeued',
     'message:removed',
     'run:complete',
+] as const;
+
+// These stay session-local because their agent-bus form is not the generic
+// `{ sessionId, ...payload, hostRuntime? }` shape used by normal forwarded events.
+export const SESSION_ONLY_EVENT_NAMES = ['llm:switched'] as const;
+
+/**
+ * Session-level event names - events that occur within individual sessions
+ */
+export const SESSION_EVENT_NAMES = [
+    ...FORWARDED_SESSION_EVENT_NAMES,
+    ...SESSION_ONLY_EVENT_NAMES,
 ] as const;
 
 /**
@@ -229,7 +237,20 @@ export type IntegrationEvent =
  * Combined event map for the agent bus - includes agent events and session events with sessionId
  * This is what the global agent event bus uses to aggregate all events
  */
-export interface AgentEventMap {
+export type HostRuntimeEventContext = {
+    hostRuntime?: HostRuntimeContext | undefined;
+};
+
+export type EventArgs<TEvent> = TEvent extends void ? [] : [TEvent];
+export type EventListener<TEvent> = (...args: EventArgs<TEvent>) => void;
+
+type WithHostRuntime<TEventMap extends object> = {
+    [K in keyof TEventMap]: TEventMap[K] extends void
+        ? void
+        : TEventMap[K] & HostRuntimeEventContext;
+};
+
+interface AgentOwnEventMapBase {
     // Session events
     /** Fired when session conversation is reset */
     'session:reset': {
@@ -342,119 +363,6 @@ export interface AgentEventMap {
         metadata?: Record<string, unknown>;
     };
 
-    // LLM events (forwarded from session bus with sessionId added)
-    /** LLM service started thinking */
-    'llm:thinking': {
-        sessionId: string;
-    };
-
-    /** LLM service sent a streaming chunk */
-    'llm:chunk': {
-        chunkType: 'text' | 'reasoning';
-        content: string;
-        isComplete?: boolean;
-        sessionId: string;
-    };
-
-    /** LLM service final response */
-    'llm:response': {
-        content: string;
-        reasoning?: string;
-        provider?: LLMProvider;
-        model?: string;
-        /** Reasoning tuning variant used for this call, when the provider exposes it. */
-        reasoningVariant?: ReasoningVariant;
-        /** Reasoning budget tokens used for this call, when the provider exposes it. */
-        reasoningBudgetTokens?: number;
-        tokenUsage?: TokenUsage;
-        /** Stable assistant message ID for this response. */
-        messageId?: string;
-        /** Optional usage scope identifier for runtime-scoped metering. */
-        usageScopeId?: string;
-        /** Estimated cost in USD for this response, when pricing is available. */
-        estimatedCost?: number;
-        /** Estimated token-cost breakdown in USD for this response, when pricing is available. */
-        costBreakdown?: TokenUsageCostBreakdown;
-        /** Whether pricing was resolved for this response. */
-        pricingStatus?: LLMPricingStatus;
-        /** Estimated input tokens before LLM call (for analytics/calibration) */
-        estimatedInputTokens?: number;
-        /** Finish reason: 'tool-calls' means more steps coming, others indicate completion */
-        finishReason?: LLMFinishReason;
-        sessionId: string;
-    };
-
-    /** Best-effort provider rate-limit status update for the active session. */
-    'llm:rate-limit-status': {
-        provider?: LLMProvider;
-        model?: string;
-        snapshot: CodexRateLimitSnapshot;
-        sessionId: string;
-    };
-
-    /** LLM service requested a tool call */
-    'llm:tool-call': {
-        toolName: string;
-        /** Optional UI-agnostic presentation snapshot (clients MUST fall back when absent) */
-        presentationSnapshot?: ToolPresentationSnapshotV1;
-        args: Record<string, any>;
-        /** Optional non-execution metadata from the reserved __meta wrapper */
-        meta?: ToolCallMetadata;
-        /** Optional user-facing description from tool call metadata (e.g., __meta.callDescription) */
-        callDescription?: string;
-        callId?: string;
-        sessionId: string;
-    };
-
-    /** LLM service streamed partial tool input */
-    'llm:tool-call-partial': {
-        toolName: string;
-        args: Record<string, any>;
-        /** Optional user-facing description from tool call metadata (e.g., __meta.callDescription) */
-        callDescription?: string;
-        callId?: string;
-        isComplete?: boolean;
-        sessionId: string;
-    };
-
-    /** LLM service returned a tool result */
-    'llm:tool-result': {
-        toolName: string;
-        /** Optional UI-agnostic presentation snapshot (clients MUST fall back when absent) */
-        presentationSnapshot?: ToolPresentationSnapshotV1;
-        /** Optional non-execution metadata from the reserved __meta wrapper */
-        meta?: ToolCallMetadata;
-        callId?: string;
-        success: boolean;
-        /** Sanitized result - present when success=true */
-        sanitized?: SanitizedToolResult;
-        rawResult?: unknown;
-        /** Error message - present when success=false */
-        error?: string;
-        /** Whether this tool required user approval */
-        requireApproval?: boolean;
-        /** The approval status (only present if requireApproval is true) */
-        approvalStatus?: 'approved' | 'rejected';
-        sessionId: string;
-    };
-
-    /** Tool execution actually started (after approval if needed) */
-    'tool:running': {
-        toolName: string;
-        toolCallId: string;
-        sessionId: string;
-    };
-
-    /** LLM service error */
-    'llm:error': {
-        error: Error;
-        context?: string;
-        recoverable?: boolean;
-        /** Tool call ID if error occurred during tool execution */
-        toolCallId?: string;
-        sessionId: string;
-    };
-
     /** LLM service switched */
     'llm:switched': {
         newConfig: any; // LLMConfig type
@@ -462,83 +370,8 @@ export interface AgentEventMap {
         sessionIds: string[]; // Array of affected session IDs
     };
 
-    /** LLM service unsupported input */
-    'llm:unsupported-input': {
-        errors: string[];
-        provider: LLMProvider;
-        model?: string;
-        fileType?: string;
-        details?: any;
-        sessionId: string;
-    };
-
-    /** Context compaction is starting */
-    'context:compacting': {
-        /** Estimated tokens that triggered compaction */
-        estimatedTokens: number;
-        sessionId: string;
-    };
-
-    /** Context was compacted during multi-step tool calling */
-    'context:compacted': {
-        /** Actual input tokens from API that triggered compaction */
-        originalTokens: number;
-        /** Estimated tokens after compaction (simple length/4 heuristic) */
-        compactedTokens: number;
-        originalMessages: number;
-        compactedMessages: number;
-        strategy: string;
-        reason: 'overflow' | 'manual';
-        sessionId: string;
-    };
-
-    /** Old tool outputs were pruned (marked with compactedAt) to save tokens */
-    'context:pruned': {
-        prunedCount: number;
-        savedTokens: number;
-        sessionId: string;
-    };
-
     /** Context was manually cleared via /clear command */
     'context:cleared': {
-        sessionId: string;
-    };
-
-    /** User message was queued during agent execution */
-    'message:queued': {
-        position: number;
-        id: string;
-        sessionId: string;
-    };
-
-    /** Queued messages were dequeued and injected into context */
-    'message:dequeued': {
-        count: number;
-        ids: string[];
-        coalesced: boolean;
-        /** Combined content of all dequeued messages (for UI display) */
-        content: import('../context/types.js').ContentPart[];
-        sessionId: string;
-        /** Raw dequeued messages (optional) */
-        messages?: import('../session/types.js').QueuedMessage[];
-    };
-
-    /** Queued message was removed from queue */
-    'message:removed': {
-        id: string;
-        sessionId: string;
-    };
-
-    /** Agent run completed (all steps done, no queued messages remaining) */
-    'run:complete': {
-        /** How the run ended */
-        finishReason: LLMFinishReason;
-        /** Number of steps executed */
-        stepCount: number;
-        /** Total wall-clock duration of the run in milliseconds */
-        durationMs: number;
-        /** Error that caused termination (only if finishReason === 'error') */
-        error?: Error;
         sessionId: string;
     };
 
@@ -629,9 +462,9 @@ export type ToolBackgroundEvent = AgentEventMap['tool:background'];
  * Session-level events - these occur within individual sessions without session context
  * (since they're already scoped to a session)
  */
-export interface SessionEventMap {
+interface SessionEventMapBase {
     /** LLM service started thinking */
-    'llm:thinking': void;
+    'llm:thinking': {};
 
     /** LLM service sent a streaming chunk */
     'llm:chunk': {
@@ -806,6 +639,19 @@ export interface SessionEventMap {
     };
 }
 
+export type ForwardedSessionEventName = (typeof FORWARDED_SESSION_EVENT_NAMES)[number];
+
+type ForwardedSessionEventMapBase = {
+    [K in ForwardedSessionEventName]: SessionEventMapBase[K] extends void
+        ? { sessionId: string }
+        : SessionEventMapBase[K] & { sessionId: string };
+};
+
+type AgentEventMapBase = AgentOwnEventMapBase & ForwardedSessionEventMapBase;
+
+export type AgentEventMap = WithHostRuntime<AgentEventMapBase>;
+export type SessionEventMap = WithHostRuntime<SessionEventMapBase>;
+
 export type AgentEventName = keyof AgentEventMap;
 export type SessionEventName = keyof SessionEventMap;
 export type EventName = keyof AgentEventMap;
@@ -846,21 +692,59 @@ export const EventNames: readonly EventName[] = Object.freeze([...EVENT_NAMES]);
  * Exported for extension by packages like multi-agent-server that need custom event buses.
  */
 export class BaseTypedEventEmitter<TEventMap extends Record<string, any>> {
-    // Wrapped EventEmitter instance
-    private _emitter = new EventEmitter();
+    private _listeners: Partial<{
+        [K in keyof TEventMap]: Set<EventListener<TEventMap[K]>>;
+    }> = {};
+    private _abortListeners = new WeakMap<AbortSignal, Set<() => void>>();
 
-    // Store listeners with their abort controllers for cleanup
-    // Maps AbortSignal -> Event Name -> Set of listener functions
-    private _abortListeners = new WeakMap<AbortSignal, Map<keyof TEventMap, Set<Function>>>();
+    private getOrCreateListeners<K extends keyof TEventMap>(
+        event: K
+    ): Set<EventListener<TEventMap[K]>> {
+        let listeners = this._listeners[event];
+        if (listeners === undefined) {
+            listeners = new Set<EventListener<TEventMap[K]>>();
+            this._listeners[event] = listeners;
+        }
+        return listeners;
+    }
+
+    private registerAbortCleanup(signal: AbortSignal, cleanup: () => void): void {
+        let cleanups = this._abortListeners.get(signal);
+        if (cleanups === undefined) {
+            cleanups = new Set();
+            this._abortListeners.set(signal, cleanups);
+        }
+        cleanups.add(cleanup);
+        signal.addEventListener('abort', cleanup, { once: true });
+    }
+
+    private unregisterAbortCleanup(signal: AbortSignal, cleanup: () => void): void {
+        const cleanups = this._abortListeners.get(signal);
+        if (cleanups === undefined) {
+            return;
+        }
+
+        cleanups.delete(cleanup);
+        signal.removeEventListener('abort', cleanup);
+        if (cleanups.size === 0) {
+            this._abortListeners.delete(signal);
+        }
+    }
 
     /**
      * Emit an event with type-safe payload
      */
-    emit<K extends keyof TEventMap>(
-        event: K,
-        ...args: TEventMap[K] extends void ? [] : [TEventMap[K]]
-    ): boolean {
-        return this._emitter.emit(event as string, ...args);
+    emit<K extends keyof TEventMap>(event: K, ...args: EventArgs<TEventMap[K]>): boolean {
+        const listeners = this._listeners[event];
+        if (listeners === undefined || listeners.size === 0) {
+            return false;
+        }
+
+        for (const listener of [...listeners]) {
+            listener(...args);
+        }
+
+        return true;
     }
 
     /**
@@ -868,7 +752,7 @@ export class BaseTypedEventEmitter<TEventMap extends Record<string, any>> {
      */
     on<K extends keyof TEventMap>(
         event: K,
-        listener: TEventMap[K] extends void ? () => void : (payload: TEventMap[K]) => void,
+        listener: EventListener<TEventMap[K]>,
         options?: { signal?: AbortSignal }
     ): this {
         // If signal is already aborted, don't add the listener
@@ -876,44 +760,18 @@ export class BaseTypedEventEmitter<TEventMap extends Record<string, any>> {
             return this;
         }
 
-        // Add the listener
-        this._emitter.on(event as string, listener);
+        const listeners = this.getOrCreateListeners(event);
+        listeners.add(listener);
 
         // Set up abort handling if signal is provided
         if (options?.signal) {
             const signal = options.signal;
-
-            // Track this listener for cleanup using Map -> Set structure
-            if (!this._abortListeners.has(signal)) {
-                this._abortListeners.set(signal, new Map());
-            }
-            const eventMap = this._abortListeners.get(signal)!;
-            if (!eventMap.has(event)) {
-                eventMap.set(event, new Set());
-            }
-            eventMap.get(event)!.add(listener as Function);
-
-            // Set up abort handler
-            const abortHandler = () => {
+            const cleanup = () => {
                 this.off(event, listener);
-
-                // Clean up tracking
-                const eventMap = this._abortListeners.get(signal);
-                if (eventMap) {
-                    const listenerSet = eventMap.get(event);
-                    if (listenerSet) {
-                        listenerSet.delete(listener as Function);
-                        if (listenerSet.size === 0) {
-                            eventMap.delete(event);
-                        }
-                    }
-                    if (eventMap.size === 0) {
-                        this._abortListeners.delete(signal);
-                    }
-                }
+                this.unregisterAbortCleanup(signal, cleanup);
             };
 
-            signal.addEventListener('abort', abortHandler, { once: true });
+            this.registerAbortCleanup(signal, cleanup);
         }
 
         return this;
@@ -924,7 +782,7 @@ export class BaseTypedEventEmitter<TEventMap extends Record<string, any>> {
      */
     once<K extends keyof TEventMap>(
         event: K,
-        listener: TEventMap[K] extends void ? () => void : (payload: TEventMap[K]) => void,
+        listener: EventListener<TEventMap[K]>,
         options?: { signal?: AbortSignal }
     ): this {
         // If signal is already aborted, don't add the listener
@@ -932,65 +790,28 @@ export class BaseTypedEventEmitter<TEventMap extends Record<string, any>> {
             return this;
         }
 
-        // Create a wrapper that handles both once and abort cleanup
-        const onceWrapper = (...args: any[]) => {
-            // Clean up abort tracking before calling the original listener
-            if (options?.signal) {
-                const eventMap = this._abortListeners.get(options.signal);
-                if (eventMap) {
-                    const listenerSet = eventMap.get(event);
-                    if (listenerSet) {
-                        listenerSet.delete(onceWrapper);
-                        if (listenerSet.size === 0) {
-                            eventMap.delete(event);
-                        }
-                    }
-                    if (eventMap.size === 0) {
-                        this._abortListeners.delete(options.signal);
-                    }
-                }
+        let cleanupAbortListener: (() => void) | undefined;
+        const onceWrapper: EventListener<TEventMap[K]> = (...args) => {
+            this.off(event, onceWrapper);
+            if (cleanupAbortListener !== undefined && options?.signal) {
+                this.unregisterAbortCleanup(options.signal, cleanupAbortListener);
+                cleanupAbortListener = undefined;
             }
-            (listener as any)(...args);
+            listener(...args);
         };
 
-        // Add the wrapped listener
-        this._emitter.once(event as string, onceWrapper);
+        this.getOrCreateListeners(event).add(onceWrapper);
 
         // Set up abort handling if signal is provided
         if (options?.signal) {
             const signal = options.signal;
-
-            // Track this listener for cleanup using Map -> Set structure
-            if (!this._abortListeners.has(signal)) {
-                this._abortListeners.set(signal, new Map());
-            }
-            const eventMap = this._abortListeners.get(signal)!;
-            if (!eventMap.has(event)) {
-                eventMap.set(event, new Set());
-            }
-            eventMap.get(event)!.add(onceWrapper);
-
-            // Set up abort handler
-            const abortHandler = () => {
+            const abortCleanup = () => {
                 this.off(event, onceWrapper);
-
-                // Clean up tracking
-                const eventMap = this._abortListeners.get(signal);
-                if (eventMap) {
-                    const listenerSet = eventMap.get(event);
-                    if (listenerSet) {
-                        listenerSet.delete(onceWrapper);
-                        if (listenerSet.size === 0) {
-                            eventMap.delete(event);
-                        }
-                    }
-                    if (eventMap.size === 0) {
-                        this._abortListeners.delete(signal);
-                    }
-                }
+                this.unregisterAbortCleanup(signal, abortCleanup);
             };
+            cleanupAbortListener = abortCleanup;
 
-            signal.addEventListener('abort', abortHandler, { once: true });
+            this.registerAbortCleanup(signal, abortCleanup);
         }
 
         return this;
@@ -999,11 +820,16 @@ export class BaseTypedEventEmitter<TEventMap extends Record<string, any>> {
     /**
      * Unsubscribe from an event
      */
-    off<K extends keyof TEventMap>(
-        event: K,
-        listener: TEventMap[K] extends void ? () => void : (payload: TEventMap[K]) => void
-    ): this {
-        this._emitter.off(event as string, listener);
+    off<K extends keyof TEventMap>(event: K, listener: EventListener<TEventMap[K]>): this {
+        const listeners = this._listeners[event];
+        if (listeners === undefined) {
+            return this;
+        }
+
+        listeners.delete(listener);
+        if (listeners.size === 0) {
+            delete this._listeners[event];
+        }
         return this;
     }
 
@@ -1011,7 +837,7 @@ export class BaseTypedEventEmitter<TEventMap extends Record<string, any>> {
      * Configure max listeners for this event bus to avoid noisy warnings when many subscribers exist.
      */
     setMaxListeners(count: number): this {
-        this._emitter.setMaxListeners(count);
+        void count;
         return this;
     }
 }
@@ -1029,9 +855,163 @@ export class SessionEventBus extends BaseTypedEventEmitter<SessionEventMap> {}
 /**
  * Combined typed event emitter for backward compatibility
  */
-export class TypedEventEmitter extends BaseTypedEventEmitter<AgentEventMap> {}
+export class TypedEventEmitter extends AgentEventBus {}
 
 /**
  * Global shared event bus (backward compatibility)
  */
 export const eventBus = new TypedEventEmitter().setMaxListeners(200);
+
+function withForwardedSessionContext<TPayload extends HostRuntimeEventContext>(
+    payload: TPayload,
+    sessionId: string,
+    hostRuntime?: HostRuntimeContext
+): TPayload & { sessionId: string } {
+    if (payload.hostRuntime !== undefined || hostRuntime === undefined) {
+        return {
+            ...payload,
+            sessionId,
+        };
+    }
+
+    return {
+        ...payload,
+        sessionId,
+        hostRuntime,
+    };
+}
+
+type ForwardSessionEventsOptions = {
+    sessionEventBus: SessionEventBus;
+    agentEventBus: AgentEventBus;
+    sessionId: string;
+    hostRuntime?: HostRuntimeContext;
+};
+
+export function forwardSessionEventsToAgentBus({
+    sessionEventBus,
+    agentEventBus,
+    sessionId,
+    hostRuntime,
+}: ForwardSessionEventsOptions): () => void {
+    const cleanups: Array<() => void> = [];
+
+    const on = <K extends ForwardedSessionEventName>(
+        event: K,
+        listener: EventListener<SessionEventMap[K]>
+    ) => {
+        sessionEventBus.on(event, listener);
+        cleanups.push(() => {
+            sessionEventBus.off(event, listener);
+        });
+    };
+
+    on('llm:thinking', (payload) => {
+        agentEventBus.emit(
+            'llm:thinking',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('llm:chunk', (payload) => {
+        agentEventBus.emit(
+            'llm:chunk',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('llm:response', (payload) => {
+        agentEventBus.emit(
+            'llm:response',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('llm:rate-limit-status', (payload) => {
+        agentEventBus.emit(
+            'llm:rate-limit-status',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('llm:tool-call', (payload) => {
+        agentEventBus.emit(
+            'llm:tool-call',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('llm:tool-call-partial', (payload) => {
+        agentEventBus.emit(
+            'llm:tool-call-partial',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('llm:tool-result', (payload) => {
+        agentEventBus.emit(
+            'llm:tool-result',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('llm:error', (payload) => {
+        agentEventBus.emit(
+            'llm:error',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('llm:unsupported-input', (payload) => {
+        agentEventBus.emit(
+            'llm:unsupported-input',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('tool:running', (payload) => {
+        agentEventBus.emit(
+            'tool:running',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('context:compacting', (payload) => {
+        agentEventBus.emit(
+            'context:compacting',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('context:compacted', (payload) => {
+        agentEventBus.emit(
+            'context:compacted',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('context:pruned', (payload) => {
+        agentEventBus.emit(
+            'context:pruned',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('message:queued', (payload) => {
+        agentEventBus.emit(
+            'message:queued',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('message:dequeued', (payload) => {
+        agentEventBus.emit(
+            'message:dequeued',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('message:removed', (payload) => {
+        agentEventBus.emit(
+            'message:removed',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+    on('run:complete', (payload) => {
+        agentEventBus.emit(
+            'run:complete',
+            withForwardedSessionContext(payload, sessionId, hostRuntime)
+        );
+    });
+
+    return () => {
+        for (const cleanup of cleanups) {
+            cleanup();
+        }
+    };
+}

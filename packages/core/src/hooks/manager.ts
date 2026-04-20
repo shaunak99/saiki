@@ -10,6 +10,7 @@ import type { ToolManager } from '../tools/tool-manager.js';
 import type { AgentStateManager } from '../agent/state-manager.js';
 import type { Logger } from '../logger/v2/types.js';
 import { DextoLogComponent } from '../logger/v2/types.js';
+import type { AgentRunContext } from '../runtime/run-context.js';
 
 /**
  * Options for HookManager construction.
@@ -28,6 +29,7 @@ export interface HookExecutionContextOptions {
     mcpManager: MCPManager;
     toolManager: ToolManager;
     stateManager: AgentStateManager;
+    runContext?: AgentRunContext | undefined;
     sessionId?: string;
     abortSignal?: AbortSignal;
 }
@@ -168,12 +170,15 @@ export class HookManager {
 
         // Build execution context
         const asyncCtx = getContext();
-        const llmConfig = options.stateManager.getLLMConfig(options.sessionId);
+        const sessionId = options.runContext?.sessionId ?? options.sessionId;
+        const runtimeConfig = options.stateManager.getRuntimeConfig(sessionId);
+        const llmConfig = runtimeConfig.llm;
 
         const context: HookExecutionContext = {
-            sessionId: options.sessionId ?? undefined,
+            sessionId: sessionId ?? undefined,
             userId: asyncCtx?.userId ?? undefined,
             tenantId: asyncCtx?.tenantId ?? undefined,
+            hostRuntime: options.runContext?.hostRuntime,
             llmConfig,
             logger: this.logger,
             abortSignal: options.abortSignal ?? undefined,

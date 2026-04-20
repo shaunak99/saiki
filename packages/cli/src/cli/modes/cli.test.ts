@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MainModeContext } from './context.js';
 
 const applyWorkspaceToAgent = vi.fn();
+let runCliMode: typeof import('./cli.js').runCliMode;
 
 vi.mock('../../utils/workspace.js', () => ({
     applyWorkspaceToAgent,
@@ -13,8 +14,6 @@ vi.mock('../../analytics/wrapper.js', () => ({
 }));
 
 describe('runCliMode', () => {
-    let runCliMode: typeof import('./cli.js').runCliMode;
-
     beforeAll(async () => {
         ({ runCliMode } = await import('./cli.js'));
     }, 20_000);

@@ -474,7 +474,7 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
                 'typed',
                 { count: 5, __meta: { callDescription: 'Read test file' } },
                 'call-1',
-                'session-1'
+                { sessionId: 'session-1' }
             );
 
             expect(mockAgentEventBus.emit).toHaveBeenCalledWith(
@@ -528,7 +528,7 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
                     },
                 },
                 'call-1',
-                'session-1'
+                { sessionId: 'session-1' }
             );
 
             expect(mockAgentEventBus.emit).toHaveBeenCalledWith(
@@ -579,7 +579,7 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
                 'mcp--file_read',
                 { path: '/test', description: 'Read test file' },
                 'call-1',
-                'session-1'
+                { sessionId: 'session-1' }
             );
 
             expect(mockAgentEventBus.emit).toHaveBeenCalledWith(
@@ -629,7 +629,9 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
             );
             toolManager.setToolExecutionContextFactory((baseContext) => baseContext);
 
-            await toolManager.executeTool('typed', { count: '5' }, 'call-1', 'session-1');
+            await toolManager.executeTool('typed', { count: '5' }, 'call-1', {
+                sessionId: 'session-1',
+            });
 
             expect(approvalOverrideSpy).toHaveBeenCalledWith(
                 { count: 5 },
@@ -645,6 +647,129 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
                     toolCallId: 'call-1',
                     args: { count: 5 },
                     sessionId: 'session-1',
+                })
+            );
+        });
+
+        it('should support legacy positional sessionId and abortSignal arguments', async () => {
+            mockMcpManager.getAllTools = vi.fn().mockResolvedValue({});
+            const executeSpy = vi.fn().mockResolvedValue('ok');
+
+            const tool = defineTool({
+                id: 'typed',
+                description: 'Typed tool',
+                inputSchema: z
+                    .object({
+                        count: z.coerce.number().int().default(0),
+                    })
+                    .strict(),
+                execute: executeSpy,
+            });
+
+            const toolManager = createToolManager(
+                mockMcpManager,
+                mockApprovalManager,
+                mockAllowedToolsProvider,
+                'manual',
+                mockAgentEventBus,
+                { alwaysAllow: [], alwaysDeny: [] },
+                [tool],
+                mockLogger
+            );
+            const controller = new AbortController();
+
+            toolManager.setToolExecutionContextFactory((baseContext) => baseContext);
+
+            await toolManager.executeTool(
+                'typed',
+                { count: '5' },
+                'call-legacy',
+                'session-legacy',
+                controller.signal
+            );
+
+            expect(executeSpy).toHaveBeenCalledWith(
+                { count: 5 },
+                expect.objectContaining({
+                    sessionId: 'session-legacy',
+                    abortSignal: controller.signal,
+                })
+            );
+            expect(mockApprovalManager.requestToolApproval).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    sessionId: 'session-legacy',
+                })
+            );
+        });
+
+        it('should propagate host runtime through explicit run context during tool execution', async () => {
+            mockMcpManager.getAllTools = vi.fn().mockResolvedValue({});
+            const executeSpy = vi.fn().mockResolvedValue('ok');
+
+            const tool = defineTool({
+                id: 'typed',
+                description: 'Typed tool',
+                inputSchema: z
+                    .object({
+                        count: z.coerce.number().int().default(0),
+                    })
+                    .strict(),
+                execute: executeSpy,
+            });
+
+            const toolManager = createToolManager(
+                mockMcpManager,
+                mockApprovalManager,
+                mockAllowedToolsProvider,
+                'manual',
+                mockAgentEventBus,
+                { alwaysAllow: [], alwaysDeny: [] },
+                [tool],
+                mockLogger
+            );
+            const runContext = {
+                sessionId: 'session-1',
+                hostRuntime: {
+                    ids: {
+                        runId: 'run-1',
+                        attemptId: 'attempt-1',
+                    },
+                },
+                telemetryContext: {} as any,
+            };
+
+            toolManager.setToolExecutionContextFactory((baseContext) => baseContext);
+
+            await toolManager.executeTool('typed', { count: '5' }, 'call-1', {
+                runContext,
+            });
+
+            expect(executeSpy).toHaveBeenCalledWith(
+                { count: 5 },
+                expect.objectContaining({
+                    sessionId: 'session-1',
+                    runContext,
+                    hostRuntime: runContext.hostRuntime,
+                })
+            );
+            expect(mockAgentEventBus.emit).toHaveBeenCalledWith(
+                'llm:tool-call',
+                expect.objectContaining({
+                    sessionId: 'session-1',
+                    hostRuntime: runContext.hostRuntime,
+                })
+            );
+            expect(mockAgentEventBus.emit).toHaveBeenCalledWith(
+                'tool:running',
+                expect.objectContaining({
+                    sessionId: 'session-1',
+                    hostRuntime: runContext.hostRuntime,
+                })
+            );
+            expect(mockApprovalManager.requestToolApproval).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    sessionId: 'session-1',
+                    hostRuntime: runContext.hostRuntime,
                 })
             );
         });
@@ -726,7 +851,7 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
                 'fs_like_tool',
                 { file_path: '/tmp/example.txt' },
                 'call-1',
-                'session-1'
+                { sessionId: 'session-1' }
             );
 
             expect(result).toEqual(
@@ -767,6 +892,64 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
                 'approval.onGranted',
                 'execute',
             ]);
+        });
+
+        it('should preserve host runtime from a directory access approval override when run context is absent', async () => {
+            mockMcpManager.getAllTools = vi.fn().mockResolvedValue({});
+
+            const hostRuntime = {
+                ids: {
+                    runId: 'run-1',
+                    attemptId: 'attempt-1',
+                },
+            };
+            const tool = defineTool({
+                id: 'fs_like_tool',
+                description: 'Filesystem-like tool',
+                inputSchema: z
+                    .object({
+                        file_path: z.string(),
+                    })
+                    .strict(),
+                approval: {
+                    override: vi.fn().mockResolvedValue({
+                        type: ApprovalType.DIRECTORY_ACCESS,
+                        metadata: {
+                            path: '/tmp/example.txt',
+                            parentDir: '/tmp',
+                            operation: 'read',
+                            toolName: 'fs_like_tool',
+                        },
+                        hostRuntime,
+                    }),
+                },
+                execute: vi.fn().mockResolvedValue('ok'),
+            });
+
+            const toolManager = createToolManager(
+                mockMcpManager,
+                mockApprovalManager,
+                mockAllowedToolsProvider,
+                'manual',
+                mockAgentEventBus,
+                { alwaysAllow: ['fs_like_tool'], alwaysDeny: [] },
+                [tool],
+                mockLogger
+            );
+            toolManager.setToolExecutionContextFactory((baseContext) => baseContext);
+
+            await toolManager.executeTool(
+                'fs_like_tool',
+                { file_path: '/tmp/example.txt' },
+                'call-1',
+                { sessionId: 'session-1' }
+            );
+
+            expect(mockApprovalManager.requestToolApproval).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    hostRuntime,
+                })
+            );
         });
 
         it('should auto-approve pending directory access prompts when rememberDirectory is selected', async () => {
@@ -903,7 +1086,7 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
                 'fs_like_tool',
                 { file_path: '/tmp/example.txt' },
                 'call-1',
-                'session-1'
+                { sessionId: 'session-1' }
             );
 
             expect(mockApprovalManager.autoApprovePendingRequests).toHaveBeenCalledTimes(1);
@@ -932,7 +1115,7 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
                     },
                 },
                 'call-123',
-                'session123'
+                { sessionId: 'session123' }
             );
 
             expect(mockApprovalManager.requestToolApproval).toHaveBeenCalledWith(
@@ -982,12 +1165,9 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
             );
             toolManager.setToolExecutionContextFactory((baseContext) => baseContext);
 
-            await toolManager.executeTool(
-                'bash_like_tool',
-                { command: 'git status' },
-                'call-1',
-                'session-1'
-            );
+            await toolManager.executeTool('bash_like_tool', { command: 'git status' }, 'call-1', {
+                sessionId: 'session-1',
+            });
 
             expect(mockApprovalManager.requestToolApproval).toHaveBeenCalledWith(
                 expect.objectContaining({
@@ -1018,7 +1198,7 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
                 'mcp--file_read',
                 { path: '/test', description: 'Read test file' },
                 'call-123',
-                'session123'
+                { sessionId: 'session123' }
             );
 
             expect(mockApprovalManager.requestToolApproval).toHaveBeenCalledWith(
@@ -1061,7 +1241,7 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
                         },
                     },
                     'call-123',
-                    'session-1'
+                    { sessionId: 'session-1' }
                 );
 
                 const result = response.result as {
@@ -1116,7 +1296,7 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
                         },
                     },
                     'call-123',
-                    'session-1'
+                    { sessionId: 'session-1' }
                 );
 
                 expect(response.result).toBe('sync-result');
@@ -1156,6 +1336,42 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
             );
         });
 
+        it('should pass runContext through MCP execution', async () => {
+            mockMcpManager.executeTool = vi.fn().mockResolvedValue('result');
+
+            const toolManager = createToolManager(
+                mockMcpManager,
+                mockApprovalManager,
+                mockAllowedToolsProvider,
+                'manual',
+                mockAgentEventBus,
+                { alwaysAllow: [], alwaysDeny: [] },
+                [],
+                mockLogger
+            );
+            const runContext = {
+                sessionId: 'session-1',
+                hostRuntime: {
+                    ids: {
+                        runId: 'run-1',
+                        attemptId: 'attempt-1',
+                    },
+                },
+                telemetryContext: {} as any,
+            };
+
+            await toolManager.executeTool('mcp--file_read', { path: '/test' }, 'call-789', {
+                runContext,
+            });
+
+            expect(mockMcpManager.executeTool).toHaveBeenCalledWith(
+                'file_read',
+                { path: '/test' },
+                'session-1',
+                runContext
+            );
+        });
+
         it('should throw execution denied error when approval denied', async () => {
             mockApprovalManager.requestToolApproval = vi.fn().mockResolvedValue({
                 approvalId: 'test-approval-id',
@@ -1174,7 +1390,9 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
             );
 
             const error = (await toolManager
-                .executeTool('mcp--file_read', { path: '/test' }, 'test-call-id', 'session123')
+                .executeTool('mcp--file_read', { path: '/test' }, 'test-call-id', {
+                    sessionId: 'session123',
+                })
                 .catch((e) => e)) as DextoRuntimeError;
             expect(error).toBeInstanceOf(DextoRuntimeError);
             expect(error.code).toBe(ToolErrorCode.EXECUTION_DENIED);
@@ -2698,7 +2916,7 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
                 toolManager.setSessionAutoApproveTools(sessionId, ['mcp--test_tool']);
 
                 // Execute tool with sessionId
-                await toolManager.executeTool('mcp--test_tool', {}, 'call-1', sessionId);
+                await toolManager.executeTool('mcp--test_tool', {}, 'call-1', { sessionId });
 
                 // Should NOT have requested approval (auto-approved by session config)
                 expect(mockApprovalManager.requestToolApproval).not.toHaveBeenCalled();
@@ -2737,7 +2955,7 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
                 toolManager.setSessionAutoApproveTools(sessionId, ['mcp--allowed_tool']);
 
                 // Execute a tool NOT in the auto-approve list
-                await toolManager.executeTool('mcp--other_tool', {}, 'call-1', sessionId);
+                await toolManager.executeTool('mcp--other_tool', {}, 'call-1', { sessionId });
 
                 // Should have requested approval
                 expect(mockApprovalManager.requestToolApproval).toHaveBeenCalled();
@@ -2768,7 +2986,7 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
 
                 // Should throw because alwaysDeny takes precedence
                 await expect(
-                    toolManager.executeTool('mcp--dangerous_tool', {}, 'call-1', sessionId)
+                    toolManager.executeTool('mcp--dangerous_tool', {}, 'call-1', { sessionId })
                 ).rejects.toThrow();
 
                 expect(mockMcpManager.executeTool).not.toHaveBeenCalled();
@@ -2801,7 +3019,9 @@ describe('ToolManager - Unit Tests (Pure Logic)', () => {
                 toolManager.setSessionAutoApproveTools('session-1', ['mcp--test_tool']);
 
                 // Execute with different session
-                await toolManager.executeTool('mcp--test_tool', {}, 'call-1', 'session-2');
+                await toolManager.executeTool('mcp--test_tool', {}, 'call-1', {
+                    sessionId: 'session-2',
+                });
 
                 // Should have requested approval (different session)
                 expect(mockApprovalManager.requestToolApproval).toHaveBeenCalled();

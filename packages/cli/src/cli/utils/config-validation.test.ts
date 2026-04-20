@@ -13,6 +13,7 @@ const {
     mockHandleSyncAgentsCommand: vi.fn(),
     mockGetBundledSyncTargetForAgentPath: vi.fn(),
 }));
+let validateAgentConfig: typeof import('./config-validation.js').validateAgentConfig;
 
 vi.mock('@clack/prompts', () => ({
     select: mockSelect,
@@ -74,10 +75,9 @@ vi.mock('@dexto/agent-management', () => ({
 }));
 
 describe('validateAgentConfig', () => {
-    let validateAgentConfig: typeof import('./config-validation.js').validateAgentConfig;
     beforeAll(async () => {
         ({ validateAgentConfig } = await import('./config-validation.js'));
-    });
+    }, 20_000);
 
     beforeEach(() => {
         vi.resetModules();

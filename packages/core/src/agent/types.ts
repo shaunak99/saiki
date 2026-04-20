@@ -7,6 +7,7 @@
 import type { ContentPart } from '../context/types.js';
 import type { LLMTokenUsage } from '../llm/services/types.js';
 import type { LLMProvider, LLMPricingStatus } from '../llm/types.js';
+import type { HostRuntimeContext } from '../runtime/index.js';
 
 /**
  * Re-export content part types for API consumers
@@ -56,6 +57,14 @@ export interface AgentToolCall {
 export type ContentInput = string | ContentPart[];
 
 /**
+ * Host-owned execution-scoped correlation IDs for a single generate/stream invocation.
+ *
+ * These values should be supplied by the host per run/attempt and are intentionally
+ * separate from agent/session configuration.
+ */
+export type AgentExecutionContext = HostRuntimeContext;
+
+/**
  * Options for generate() and stream() methods
  */
 export interface GenerateOptions {
@@ -63,6 +72,8 @@ export interface GenerateOptions {
     signal?: AbortSignal;
     /** Optional signal to stop streaming to the caller without cancelling the run itself */
     disconnectSignal?: AbortSignal;
+    /** Optional host-owned execution context for this single invocation */
+    executionContext?: AgentExecutionContext;
 }
 
 /**
@@ -80,6 +91,7 @@ export interface GenerateResponse {
     model?: string;
     estimatedCost?: number;
     pricingStatus?: LLMPricingStatus;
+    hostRuntime?: HostRuntimeContext;
 }
 
 /**

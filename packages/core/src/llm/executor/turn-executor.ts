@@ -48,6 +48,7 @@ import { toError } from '../../utils/error-conversion.js';
 import type { CompactionStrategy } from '../../context/compaction/types.js';
 import type { ModelLimits } from '../../context/compaction/overflow.js';
 import { isCodexBaseURL } from '../providers/codex-base-url.js';
+import type { AgentRunContext } from '../../runtime/run-context.js';
 
 /**
  * Static cache for tool support validation.
@@ -116,7 +117,8 @@ export class TurnExecutor {
         private messageQueue: MessageQueueService,
         private modelLimits?: ModelLimits,
         private externalSignal?: AbortSignal,
-        compactionStrategy: CompactionStrategy | null = null
+        compactionStrategy: CompactionStrategy | null = null,
+        private runContext?: AgentRunContext
     ) {
         this.logger = logger.createChild(DextoLogComponent.EXECUTOR);
         // Initial controller - will be replaced per-step in execute()
@@ -176,7 +178,7 @@ export class TurnExecutor {
         let lastFinishReason: LLMFinishReason = 'unknown';
         let lastText = '';
 
-        this.eventBus.emit('llm:thinking');
+        this.eventBus.emit('llm:thinking', {});
 
         // Check tool support once before the loop
         const supportsTools = await this.validateToolSupport();
@@ -698,8 +700,13 @@ export class TurnExecutor {
                                         name,
                                         args as Record<string, unknown>,
                                         options.toolCallId,
-                                        this.sessionId,
-                                        abortSignal
+                                        {
+                                            sessionId: this.sessionId,
+                                            abortSignal,
+                                            ...(this.runContext !== undefined
+                                                ? { runContext: this.runContext }
+                                                : {}),
+                                        }
                                     );
 
                                     const metadata:

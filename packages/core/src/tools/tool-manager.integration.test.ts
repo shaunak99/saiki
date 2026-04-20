@@ -225,7 +225,11 @@ describe('ToolManager Integration Tests', () => {
                 'test-call-id'
             );
 
-            expect(mockClient.callTool).toHaveBeenCalledWith('test_tool', { param: 'value' });
+            expect(mockClient.callTool).toHaveBeenCalledWith(
+                'test_tool',
+                { param: 'value' },
+                undefined
+            );
             expect(result).toEqual(expect.objectContaining({ result: 'mcp tool result' }));
         });
 
@@ -667,23 +671,26 @@ describe('ToolManager Integration Tests', () => {
             const sessionId = 'test-session-123';
 
             // Execute MCP tool with sessionId
-            await toolManager.executeTool(
-                'mcp--test_tool',
-                { param: 'value' },
-                'test-call-id-1',
-                sessionId
-            );
+            await toolManager.executeTool('mcp--test_tool', { param: 'value' }, 'test-call-id-1', {
+                sessionId,
+            });
 
             // Execute local tool with sessionId
             await toolManager.executeTool(
                 'search_history',
                 { query: 'test', mode: 'messages' },
                 'test-call-id-2',
-                sessionId
+                { sessionId }
             );
 
-            // Verify MCP tool received sessionId (note: MCPManager doesn't use sessionId in callTool currently)
-            expect(mockClient.callTool).toHaveBeenCalledWith('test_tool', { param: 'value' });
+            // Verify MCP tool received session-scoped invocation context
+            expect(mockClient.callTool).toHaveBeenCalledWith(
+                'test_tool',
+                { param: 'value' },
+                {
+                    sessionId,
+                }
+            );
 
             // Verify local tool was called with proper defaults
             expect(mockSearchService.searchMessages).toHaveBeenCalledWith(

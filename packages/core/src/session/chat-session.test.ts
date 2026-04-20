@@ -2,6 +2,8 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ChatSession } from './chat-session.js';
 import { type ValidatedLLMConfig } from '../llm/schemas.js';
 import { LLMConfigSchema } from '../llm/schemas.js';
+import { SessionErrorCode } from './error-codes.js';
+import { ErrorScope, ErrorType } from '../errors/types.js';
 
 // Mock all dependencies
 vi.mock('./history/factory.js', () => ({
@@ -35,6 +37,16 @@ import { createMockLogger } from '../logger/v2/test-utils.js';
 const mockCreateDatabaseHistoryProvider = vi.mocked(createDatabaseHistoryProvider);
 const mockCreateLLMService = vi.mocked(createLLMService);
 const mockGetEffectiveMaxInputTokens = vi.mocked(getEffectiveMaxInputTokens);
+
+function createDeferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
 
 describe('ChatSession', () => {
     let chatSession: ChatSession;
@@ -282,11 +294,48 @@ describe('ChatSession', () => {
     });
 
     describe('Event System Integration', () => {
+        test('should forward session events with host runtime from the active run context', async () => {
+            await chatSession.init();
+            const hostRuntime = {
+                ids: {
+                    runId: 'run-1',
+                    attemptId: 'attempt-1',
+                },
+            };
+
+            mockLLMService.stream.mockImplementation(async () => {
+                chatSession.eventBus.emit('llm:thinking', {});
+                return { text: 'Mock response' };
+            });
+
+            await chatSession.stream('hello', {
+                runContext: {
+                    sessionId,
+                    hostRuntime,
+                    telemetryContext: {} as any,
+                },
+            });
+
+            expect(mockServices.agentEventBus.emit).toHaveBeenCalledWith('llm:thinking', {
+                sessionId,
+                hostRuntime,
+            });
+        });
+
         test('should forward all session events to agent bus with session context', async () => {
             await chatSession.init();
 
-            // Emit a session event
-            chatSession.eventBus.emit('llm:thinking');
+            mockLLMService.stream.mockImplementation(async () => {
+                chatSession.eventBus.emit('llm:thinking', {});
+                return { text: 'Mock response' };
+            });
+
+            await chatSession.stream('hello', {
+                runContext: {
+                    sessionId,
+                    telemetryContext: {} as any,
+                },
+            });
 
             expect(mockServices.agentEventBus.emit).toHaveBeenCalledWith(
                 'llm:thinking',
@@ -296,15 +345,21 @@ describe('ChatSession', () => {
             );
         });
 
-        test('should handle events with no payload by adding session context', async () => {
+        test('should not emit llm switched directly on the agent bus', async () => {
             await chatSession.init();
 
-            // Emit event without payload (using llm:thinking as example)
-            chatSession.eventBus.emit('llm:thinking');
+            const newConfig: ValidatedLLMConfig = {
+                ...mockLLMConfig,
+                provider: 'anthropic',
+                model: 'claude-4-opus-20250514',
+            };
 
-            expect(mockServices.agentEventBus.emit).toHaveBeenCalledWith('llm:thinking', {
-                sessionId,
-            });
+            await chatSession.switchLLM(newConfig);
+
+            expect(mockServices.agentEventBus.emit).not.toHaveBeenCalledWith(
+                'llm:switched',
+                expect.anything()
+            );
         });
 
         test('should emit dexto:conversationReset event when conversation is reset', async () => {
@@ -448,6 +503,24 @@ describe('ChatSession', () => {
             mockLLMService.stream.mockRejectedValue(new Error('LLM service error'));
 
             await expect(chatSession.stream('test message')).rejects.toThrow('LLM service error');
+        });
+
+        test('should reject overlapping direct stream calls', async () => {
+            await chatSession.init();
+
+            const deferred = createDeferred<{ text: string }>();
+            mockLLMService.stream.mockImplementation(async () => await deferred.promise);
+
+            const firstRun = chatSession.stream('first message');
+
+            await expect(chatSession.stream('second message')).rejects.toMatchObject({
+                code: SessionErrorCode.SESSION_BUSY,
+                scope: ErrorScope.SESSION,
+                type: ErrorType.CONFLICT,
+            });
+
+            deferred.resolve({ text: 'ok' });
+            await expect(firstRun).resolves.toEqual({ text: 'ok' });
         });
     });
 
