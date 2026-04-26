@@ -106,4 +106,27 @@ describe('DatabaseHistoryProvider error mapping', () => {
         });
         expect(db.delete).not.toHaveBeenCalled();
     });
+
+    test('flush failure does not overwrite newer pending updates', async () => {
+        const originalMessage = createTextMessage('assistant-1', 'partial');
+        const failedMessage = createTextMessage('assistant-1', 'in flight');
+        const newerMessage = createTextMessage('assistant-1', 'complete');
+        db.getRange.mockResolvedValue([originalMessage]);
+        db.append.mockImplementationOnce(async () => {
+            await provider.updateMessage(newerMessage);
+            throw new Error('append failed');
+        });
+
+        await provider.updateMessage(failedMessage);
+        await expect(provider.flush()).rejects.toMatchObject({
+            code: SessionErrorCode.SESSION_STORAGE_FAILED,
+        });
+
+        db.append.mockResolvedValue(undefined);
+        await provider.flush();
+
+        expect(db.append).toHaveBeenNthCalledWith(1, `messages:${sessionId}`, failedMessage);
+        expect(db.append).toHaveBeenNthCalledWith(2, `messages:${sessionId}`, newerMessage);
+        expect(db.delete).not.toHaveBeenCalled();
+    });
 });

@@ -206,6 +206,7 @@ export class DatabaseHistoryProvider implements ConversationHistoryProvider {
 
         this.cancelPendingFlush();
 
+        // Drain updates that arrive while flushPendingUpdates() awaits.
         while (this.pendingUpdates.size > 0) {
             this.flushPromise = this.flushPendingUpdates();
             try {
@@ -225,13 +226,15 @@ export class DatabaseHistoryProvider implements ConversationHistoryProvider {
             `DatabaseHistoryProvider: FLUSH UPDATES key=${key} count=${updates.length} ids=[${updates.map((m) => m.id).join(',')}]`
         );
 
+        let failedIndex = updates.length;
         try {
-            for (const message of updates) {
+            for (const [index, message] of updates.entries()) {
+                failedIndex = index;
                 await this.database.append(key, message);
             }
         } catch (error) {
-            for (const message of updates) {
-                if (message.id) {
+            for (const message of updates.slice(failedIndex)) {
+                if (message.id && !this.pendingUpdates.has(message.id)) {
                     this.pendingUpdates.set(message.id, message);
                 }
             }
