@@ -214,6 +214,40 @@ describe('sanitizeToolResult success tracking', () => {
         expect(result.content[1]?.type).toBe('text');
     });
 
+    it('should preserve provided resource descriptors without adding them to model-visible content', async () => {
+        const result = await sanitizeToolResult(
+            {
+                content: [{ type: 'text', text: 'Generated one image.' }],
+                resources: [
+                    {
+                        filename: 'gpt-image-1.png',
+                        kind: 'image',
+                        mimeType: 'image/png',
+                        uri: 'blob:image-1',
+                        url: 'https://cloud.example/api/sessions/session-1/resources/image-1',
+                    },
+                ],
+            },
+            {
+                toolName: 'gpt_image',
+                toolCallId: 'call-image',
+                success: true,
+            },
+            mockLogger
+        );
+
+        expect(result.content).toEqual([{ type: 'text', text: 'Generated one image.' }]);
+        expect(result.resources).toEqual([
+            {
+                filename: 'gpt-image-1.png',
+                kind: 'image',
+                mimeType: 'image/png',
+                uri: 'blob:image-1',
+                url: 'https://cloud.example/api/sessions/session-1/resources/image-1',
+            },
+        ]);
+    });
+
     it('should track failed tool results with complex output', async () => {
         const errorOutput = {
             error: 'Tool execution failed',

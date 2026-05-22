@@ -57,6 +57,8 @@ interface PersistToolMediaResult {
     resources?: SanitizedToolResult['resources'];
 }
 
+type SanitizedResourceDescriptor = NonNullable<SanitizedToolResult['resources']>[number];
+
 function slugifyForFilename(value: string, maxLength = 48): string | null {
     if (!value) return null;
     const slug = value
@@ -1921,6 +1923,64 @@ function extractResourceDescriptors(
     return resources.length > 0 ? resources : undefined;
 }
 
+function extractProvidedResourceDescriptors(value: unknown): SanitizedToolResult['resources'] {
+    if (
+        !value ||
+        typeof value !== 'object' ||
+        !Array.isArray((value as Record<string, unknown>).resources)
+    ) {
+        return undefined;
+    }
+
+    const resources: SanitizedResourceDescriptor[] = [];
+    for (const resource of (value as Record<string, unknown>).resources as unknown[]) {
+        if (!resource || typeof resource !== 'object') {
+            continue;
+        }
+
+        const candidate = resource as Record<string, unknown>;
+        const kind = candidate.kind;
+        const mimeType = candidate.mimeType;
+        const uri = candidate.uri;
+        if (
+            (kind !== 'image' && kind !== 'audio' && kind !== 'video' && kind !== 'binary') ||
+            typeof mimeType !== 'string' ||
+            typeof uri !== 'string'
+        ) {
+            continue;
+        }
+
+        const filename = candidate.filename;
+        const url = candidate.url;
+        resources.push({
+            kind,
+            mimeType,
+            uri,
+            ...(typeof filename === 'string' ? { filename } : {}),
+            ...(typeof url === 'string' ? { url } : {}),
+        });
+    }
+
+    return resources.length > 0 ? resources : undefined;
+}
+
+function mergeResourceDescriptors(
+    left: SanitizedToolResult['resources'],
+    right: SanitizedToolResult['resources']
+): SanitizedToolResult['resources'] {
+    const merged = [...(left ?? []), ...(right ?? [])];
+    if (merged.length === 0) {
+        return undefined;
+    }
+
+    const byUri = new Map<string, SanitizedResourceDescriptor>();
+    for (const resource of merged) {
+        byUri.set(resource.uri, { ...byUri.get(resource.uri), ...resource });
+    }
+
+    return [...byUri.values()];
+}
+
 export async function sanitizeToolResult(
     result: unknown,
     options: {
@@ -1935,6 +1995,7 @@ export async function sanitizeToolResult(
     // Strip it from the payload to avoid duplicating large display data in LLM content
     let display: ToolDisplayData | undefined;
     let resultForNormalization = result;
+    const providedResources = extractProvidedResourceDescriptors(result);
 
     if (result && typeof result === 'object' && '_display' in result) {
         const { _display: rawDisplay, ...rest } = result as Record<string, unknown>;
@@ -1966,6 +2027,7 @@ export async function sanitizeToolResult(
         ...persisted.uiResources,
     ];
     const content = allContent.length > 0 ? allContent : fallbackContent;
+    const resources = mergeResourceDescriptors(providedResources, persisted.resources);
 
     if (persisted.uiResources.length > 0) {
         logger.debug(
@@ -1975,7 +2037,7 @@ export async function sanitizeToolResult(
 
     return {
         content,
-        ...(persisted.resources ? { resources: persisted.resources } : {}),
+        ...(resources ? { resources } : {}),
         meta: {
             toolName: options.toolName,
             toolCallId: options.toolCallId,

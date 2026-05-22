@@ -153,6 +153,7 @@ export interface SanitizedToolResult {
         kind: 'image' | 'audio' | 'video' | 'binary';
         mimeType: string;
         filename?: string;
+        url?: string;
     }>;
     meta: {
         toolName: string;
