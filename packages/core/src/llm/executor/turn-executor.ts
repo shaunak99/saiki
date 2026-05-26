@@ -1063,18 +1063,18 @@ export class TurnExecutor {
         // Local providers need validation regardless of baseURL (models have varying support)
         const isLocalProvider = LOCAL_PROVIDERS.includes(this.llmContext.provider);
 
-        // Skip validation only for known cloud providers without custom baseURL
-        if (!this.config.baseURL && !isLocalProvider) {
+        // Hosted/custom HTTP providers should not spend an extra model request before the
+        // first real token. Assume tool-capable and let the actual request surface any
+        // provider-specific incompatibility.
+        if (!isLocalProvider) {
             this.logger.debug(
-                `Skipping tool validation for ${modelKey} - known cloud provider without custom baseURL`
+                `Skipping tool validation for ${modelKey} - hosted provider tool support is assumed`
             );
             toolSupportCache.set(modelKey, true);
             return true;
         }
 
-        this.logger.debug(
-            `Testing tool support for ${isLocalProvider ? 'local provider' : 'custom endpoint'} model: ${modelKey}`
-        );
+        this.logger.debug(`Testing tool support for local provider model: ${modelKey}`);
 
         // Create a minimal test tool
         const testTool = {

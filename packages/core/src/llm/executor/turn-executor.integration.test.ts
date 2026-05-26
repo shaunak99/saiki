@@ -2931,12 +2931,12 @@ describe('TurnExecutor Integration Tests', () => {
             expect(generateText).not.toHaveBeenCalled();
         });
 
-        it('should validate and cache tool support for custom baseURL', async () => {
+        it('should skip validation for non-local custom baseURL providers', async () => {
             vi.mocked(generateText).mockResolvedValue(
                 {} as Awaited<ReturnType<typeof generateText>>
             );
 
-            const executor1 = new TurnExecutor(
+            const executorWithBaseURL = new TurnExecutor(
                 createMockModel(),
                 toolManager,
                 contextManager,
@@ -2951,36 +2951,12 @@ describe('TurnExecutor Integration Tests', () => {
             );
 
             await contextManager.addUserMessage([{ type: 'text', text: 'Hello' }]);
-            await executor1.execute({ mcpManager }, true);
+            await executorWithBaseURL.execute({ mcpManager }, true);
 
-            expect(generateText).toHaveBeenCalledTimes(1);
-
-            // Second executor with same baseURL should use cache
-            const newMessageQueue = new MessageQueueService(
-                sessionEventBus,
-                logger,
-                'session-2',
-                createInMemoryMessageQueueStore()
-            );
-            const executor2 = new TurnExecutor(
-                createMockModel(),
-                toolManager,
-                contextManager,
-                sessionEventBus,
-                resourceManager,
-                'session-2',
-                { maxSteps: 10, baseURL: 'https://custom.api.com' },
-                llmContext,
-                logger,
-                newMessageQueue,
-                followUpQueue
-            );
-
-            await executor2.execute({ mcpManager }, true);
-            expect(generateText).toHaveBeenCalledTimes(1);
+            expect(generateText).not.toHaveBeenCalled();
         });
 
-        it('should use empty tools when model does not support them', async () => {
+        it('should use empty tools when local model does not support them', async () => {
             vi.mocked(generateText).mockRejectedValue(new Error('Model does not support tools'));
 
             const executorWithBaseURL = new TurnExecutor(
@@ -2991,7 +2967,7 @@ describe('TurnExecutor Integration Tests', () => {
                 resourceManager,
                 sessionId,
                 { maxSteps: 10, baseURL: 'https://no-tools.api.com' },
-                llmContext,
+                { provider: 'ollama', model: 'gemma3n:e2b' },
                 logger,
                 steerQueue,
                 followUpQueue
@@ -3043,7 +3019,7 @@ describe('TurnExecutor Integration Tests', () => {
             );
         });
 
-        it('should emit llm:unsupported-input warning when model does not support tools', async () => {
+        it('should emit llm:unsupported-input warning when local model does not support tools', async () => {
             vi.mocked(generateText).mockRejectedValue(new Error('Model does not support tools'));
 
             const warningHandler = vi.fn();
@@ -3057,7 +3033,7 @@ describe('TurnExecutor Integration Tests', () => {
                 resourceManager,
                 sessionId,
                 { maxSteps: 10, baseURL: 'https://no-tools.api.com' },
-                llmContext,
+                { provider: 'ollama', model: 'gemma3n:e2b' },
                 logger,
                 steerQueue,
                 followUpQueue
@@ -3072,8 +3048,8 @@ describe('TurnExecutor Integration Tests', () => {
                         expect.stringContaining('does not support tool calling'),
                         expect.stringContaining('You can still chat'),
                     ]),
-                    provider: llmContext.provider,
-                    model: llmContext.model,
+                    provider: 'ollama',
+                    model: 'gemma3n:e2b',
                     details: expect.objectContaining({
                         feature: 'tool-calling',
                         supported: false,
